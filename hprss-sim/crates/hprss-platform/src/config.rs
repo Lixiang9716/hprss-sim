@@ -35,6 +35,8 @@ fn default_time_unit() -> String {
 #[derive(Debug, Deserialize)]
 pub struct DeviceSection {
     pub name: String,
+    #[serde(default)]
+    pub device_group: Option<String>,
     #[serde(rename = "type")]
     pub device_type: String,
     pub cores: u32,
@@ -120,6 +122,7 @@ impl PlatformConfig {
                 Ok(DeviceConfig {
                     id: DeviceId(i as u32),
                     name: d.name.clone(),
+                    device_group: d.device_group.clone(),
                     device_type,
                     cores: d.cores,
                     preemption,
@@ -453,5 +456,33 @@ arbitration = "priority_based"
                 reconfig_time_ns: 2_000_000
             }
         ));
+    }
+
+    #[test]
+    fn explicit_per_core_cpu_devices_keep_group() {
+        let toml = r#"
+[simulation]
+duration_ms = 10
+seed = 1
+
+[[device]]
+name = "FT2000-core0"
+device_group = "FT2000"
+type = "cpu"
+cores = 1
+preemption = "fully_preemptive"
+
+[[device]]
+name = "FT2000-core1"
+device_group = "FT2000"
+type = "cpu"
+cores = 1
+preemption = "fully_preemptive"
+"#;
+        let config = PlatformConfig::from_toml(toml).unwrap();
+        let devices = config.build_devices().unwrap();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].device_group.as_deref(), Some("FT2000"));
+        assert_eq!(devices[1].device_group.as_deref(), Some("FT2000"));
     }
 }

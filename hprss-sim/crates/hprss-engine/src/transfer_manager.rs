@@ -6,7 +6,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use hprss_types::{
-    BusArbitration, BusId, DeviceId, EventKind, InterconnectConfig, JobId, Nanos, SharedBusConfig,
+    BusArbitration, BusId, DeviceId, EdgeTransferId, EventKind, InterconnectConfig, JobId, Nanos,
+    SharedBusConfig,
 };
 
 /// An event that should be scheduled by the engine.
@@ -15,13 +16,21 @@ pub struct ScheduledEvent {
     pub kind: EventKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferId {
+    Job(JobId),
+    Edge(EdgeTransferId),
+}
+
 struct ActiveTransfer {
-    job_id: JobId,
+    id: TransferId,
+    owner_job_id: JobId,
     bus_id: Option<BusId>,
 }
 
 struct PendingTransfer {
-    job_id: JobId,
+    id: TransferId,
+    owner_job_id: JobId,
     target_device: DeviceId,
     data_size: u64,
     priority: u32,
@@ -85,17 +94,61 @@ impl TransferManager {
         now: Nanos,
         expected_version: u64,
     ) -> Vec<ScheduledEvent> {
+        self.initiate_transfer_internal(
+            TransferId::Job(job_id),
+            job_id,
+            from,
+            to,
+            data_size,
+            priority,
+            now,
+            expected_version,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn initiate_edge_transfer(
+        &mut self,
+        edge_id: EdgeTransferId,
+        owner_job_id: JobId,
+        from: DeviceId,
+        to: DeviceId,
+        data_size: u64,
+        priority: u32,
+        now: Nanos,
+        expected_version: u64,
+    ) -> Vec<ScheduledEvent> {
+        self.initiate_transfer_internal(
+            TransferId::Edge(edge_id),
+            owner_job_id,
+            from,
+            to,
+            data_size,
+            priority,
+            now,
+            expected_version,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn initiate_transfer_internal(
+        &mut self,
+        transfer_id: TransferId,
+        owner_job_id: JobId,
+        from: DeviceId,
+        to: DeviceId,
+        data_size: u64,
+        priority: u32,
+        now: Nanos,
+        expected_version: u64,
+    ) -> Vec<ScheduledEvent> {
         let ic = match self.find_interconnect(from, to) {
             Some(ic) => ic.clone(),
             None => {
                 // No interconnect — same-SoC instant transfer
                 return vec![ScheduledEvent {
                     time: now,
-                    kind: EventKind::TransferComplete {
-                        job_id,
-                        expected_version,
-                        device_id: to,
-                    },
+                    kind: completion_event(transfer_id, owner_job_id, expected_version, to),
                 }];
             }
         };
@@ -106,16 +159,13 @@ impl TransferManager {
             None => {
                 // Dedicated link — start immediately
                 self.active_transfers.push(ActiveTransfer {
-                    job_id,
+                    id: transfer_id,
+                    owner_job_id,
                     bus_id: None,
                 });
                 vec![ScheduledEvent {
                     time: now + transfer_time,
-                    kind: EventKind::TransferComplete {
-                        job_id,
-                        expected_version,
-                        device_id: to,
-                    },
+                    kind: completion_event(transfer_id, owner_job_id, expected_version, to),
                 }]
             }
             Some(bus_id) => {
@@ -130,7 +180,8 @@ impl TransferManager {
                         .entry(bus_id)
                         .or_default()
                         .push_back(PendingTransfer {
-                            job_id,
+                            id: transfer_id,
+                            owner_job_id,
                             target_device: to,
                             data_size,
                             priority,
@@ -140,16 +191,13 @@ impl TransferManager {
                 } else {
                     // Bus free — start immediately
                     self.active_transfers.push(ActiveTransfer {
-                        job_id,
+                        id: transfer_id,
+                        owner_job_id,
                         bus_id: Some(bus_id),
                     });
                     vec![ScheduledEvent {
                         time: now + transfer_time,
-                        kind: EventKind::TransferComplete {
-                            job_id,
-                            expected_version,
-                            device_id: to,
-                        },
+                        kind: completion_event(transfer_id, owner_job_id, expected_version, to),
                     }]
                 }
             }
@@ -159,11 +207,27 @@ impl TransferManager {
     /// Handle a completed transfer. Starts the next pending transfer on the bus
     /// if one exists (work-conserving).
     pub fn on_transfer_complete(&mut self, job_id: JobId, now: Nanos) -> Vec<ScheduledEvent> {
+        self.on_transfer_complete_internal(TransferId::Job(job_id), now)
+    }
+
+    pub fn on_edge_transfer_complete(
+        &mut self,
+        edge_id: EdgeTransferId,
+        now: Nanos,
+    ) -> Vec<ScheduledEvent> {
+        self.on_transfer_complete_internal(TransferId::Edge(edge_id), now)
+    }
+
+    fn on_transfer_complete_internal(
+        &mut self,
+        transfer_id: TransferId,
+        now: Nanos,
+    ) -> Vec<ScheduledEvent> {
         // Find and remove the completed transfer
         let pos = self
             .active_transfers
             .iter()
-            .position(|at| at.job_id == job_id);
+            .position(|at| at.id == transfer_id);
         let completed = match pos {
             Some(i) => self.active_transfers.swap_remove(i),
             None => return vec![],
@@ -193,13 +257,13 @@ impl TransferManager {
     /// cancelled, immediately start the next pending transfer on that bus.
     pub fn cancel_job(&mut self, job_id: JobId, now: Nanos) -> Vec<ScheduledEvent> {
         for queue in self.pending.values_mut() {
-            queue.retain(|p| p.job_id != job_id);
+            queue.retain(|p| p.owner_job_id != job_id);
         }
 
         let active_idx = self
             .active_transfers
             .iter()
-            .position(|at| at.job_id == job_id);
+            .position(|at| at.owner_job_id == job_id);
         let Some(idx) = active_idx else {
             return vec![];
         };
@@ -253,20 +317,43 @@ impl TransferManager {
             Some(ic) => {
                 let transfer_time = Self::calculate_transfer_time(&ic, next.data_size);
                 self.active_transfers.push(ActiveTransfer {
-                    job_id: next.job_id,
+                    id: next.id,
+                    owner_job_id: next.owner_job_id,
                     bus_id: Some(bus_id),
                 });
                 vec![ScheduledEvent {
                     time: now + transfer_time,
-                    kind: EventKind::TransferComplete {
-                        job_id: next.job_id,
-                        expected_version: next.expected_version,
-                        device_id: next.target_device,
-                    },
+                    kind: completion_event(
+                        next.id,
+                        next.owner_job_id,
+                        next.expected_version,
+                        next.target_device,
+                    ),
                 }]
             }
             None => vec![],
         }
+    }
+}
+
+fn completion_event(
+    transfer_id: TransferId,
+    owner_job_id: JobId,
+    expected_version: u64,
+    device_id: DeviceId,
+) -> EventKind {
+    match transfer_id {
+        TransferId::Job(job_id) => EventKind::TransferComplete {
+            job_id,
+            expected_version,
+            device_id,
+        },
+        TransferId::Edge(edge_id) => EventKind::EdgeTransferComplete {
+            job_id: owner_job_id,
+            expected_version,
+            device_id,
+            edge_id,
+        },
     }
 }
 
@@ -397,5 +484,35 @@ mod tests {
         // ceil(4096 / 1.5) = ceil(2730.666...) = 2731
         let time = TransferManager::calculate_transfer_time(&ic, 4096);
         assert_eq!(time, 2000 + 2731);
+    }
+
+    #[test]
+    fn test_edge_transfer_emits_edge_event() {
+        let cpu = DeviceId(0);
+        let gpu = DeviceId(1);
+        let ic = dedicated_interconnect(cpu, gpu);
+        let mut mgr = TransferManager::new(vec![ic], vec![]);
+        let edge_id = EdgeTransferId {
+            dag_instance_id: hprss_types::DagInstanceId(1),
+            from_node: hprss_types::SubTaskIdx(0),
+            to_node: hprss_types::SubTaskIdx(2),
+        };
+
+        let events = mgr.initiate_edge_transfer(edge_id, JobId(11), cpu, gpu, 512, 1, 100, 3);
+        assert_eq!(events.len(), 1);
+        match &events[0].kind {
+            EventKind::EdgeTransferComplete {
+                job_id,
+                expected_version,
+                device_id,
+                edge_id: emitted_edge,
+            } => {
+                assert_eq!(*job_id, JobId(11));
+                assert_eq!(*expected_version, 3);
+                assert_eq!(*device_id, gpu);
+                assert_eq!(*emitted_edge, edge_id);
+            }
+            other => panic!("unexpected event kind: {other:?}"),
+        }
     }
 }

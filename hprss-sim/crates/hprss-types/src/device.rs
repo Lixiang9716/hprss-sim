@@ -73,6 +73,8 @@ pub enum MultiCorePolicy {
 pub struct DeviceConfig {
     pub id: DeviceId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_group: Option<String>,
     pub device_type: crate::task::DeviceType,
     pub cores: u32,
     pub preemption: PreemptionModel,

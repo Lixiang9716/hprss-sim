@@ -7,7 +7,7 @@
 
 use std::cmp::Ordering;
 
-use crate::{BusId, DeviceId, JobId, Nanos, TaskId};
+use crate::{BusId, DeviceId, EdgeTransferId, JobId, Nanos, TaskId};
 
 /// Simulation event
 #[derive(Debug, Clone)]
@@ -73,6 +73,14 @@ pub enum EventKind {
         device_id: DeviceId,
     },
 
+    /// DAG edge data transfer completed.
+    EdgeTransferComplete {
+        job_id: JobId,
+        expected_version: u64,
+        device_id: DeviceId,
+        edge_id: EdgeTransferId,
+    },
+
     /// Shared bus arbitration tick
     BusArbitration { bus_id: BusId },
 
@@ -105,6 +113,9 @@ impl EventKind {
                 expected_version, ..
             }
             | Self::TransferComplete {
+                expected_version, ..
+            }
+            | Self::EdgeTransferComplete {
                 expected_version, ..
             }
             | Self::BudgetOverrun {
@@ -159,5 +170,21 @@ mod tests {
             job_id: JobId(0),
         };
         assert!(!kind.is_stale(999));
+    }
+
+    #[test]
+    fn edge_transfer_event_uses_job_version_for_staleness() {
+        let kind = EventKind::EdgeTransferComplete {
+            job_id: JobId(9),
+            expected_version: 2,
+            device_id: DeviceId(1),
+            edge_id: crate::EdgeTransferId {
+                dag_instance_id: crate::DagInstanceId(7),
+                from_node: crate::SubTaskIdx(1),
+                to_node: crate::SubTaskIdx(3),
+            },
+        };
+        assert!(!kind.is_stale(2));
+        assert!(kind.is_stale(3));
     }
 }

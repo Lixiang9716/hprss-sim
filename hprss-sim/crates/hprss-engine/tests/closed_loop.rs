@@ -1,7 +1,8 @@
 use hprss_engine::engine::{SimConfig, SimEngine};
 use hprss_scheduler::FixedPriorityScheduler;
 use hprss_types::{
-    BusArbitration, CriticalityLevel, DeviceId, InterconnectConfig, SharedBusConfig, TaskId,
+    BusArbitration, CriticalityLevel, DeviceId, InterconnectConfig, JobId, SharedBusConfig,
+    TaskId,
     device::{DeviceConfig, PreemptionModel},
     task::{ArrivalModel, DeviceType, ExecutionTimeModel, Task},
 };
@@ -10,6 +11,7 @@ fn cpu_device(id: u32) -> DeviceConfig {
     DeviceConfig {
         id: DeviceId(id),
         name: format!("cpu-{id}"),
+        device_group: None,
         device_type: DeviceType::Cpu,
         cores: 1,
         preemption: PreemptionModel::FullyPreemptive,
@@ -24,6 +26,7 @@ fn gpu_device(id: u32) -> DeviceConfig {
     DeviceConfig {
         id: DeviceId(id),
         name: format!("gpu-{id}"),
+        device_group: None,
         device_type: DeviceType::Gpu,
         cores: 1,
         preemption: PreemptionModel::LimitedPreemptive {
@@ -120,4 +123,50 @@ fn accelerator_task_transfer_and_completion() {
     engine.run(&mut scheduler);
 
     assert!(engine.metrics().completed_jobs >= 1);
+    let job = engine
+        .get_job(JobId(0))
+        .expect("first released job should exist");
+    assert_eq!(
+        job.actual_exec_ns,
+        Some(40_000),
+        "actual exec time should match target GPU model"
+    );
+}
+
+#[test]
+fn four_cpu_cores_can_run_four_jobs_in_parallel() {
+    let mut engine = SimEngine::new(
+        SimConfig {
+            duration_ns: 200_000,
+            seed: 21,
+        },
+        vec![cpu_device(0), cpu_device(1), cpu_device(2), cpu_device(3)],
+        vec![],
+        vec![],
+    );
+    let tasks = (0..4)
+        .map(|i| Task {
+            id: TaskId(i),
+            name: format!("cpu-par-{i}"),
+            priority: 1,
+            arrival: ArrivalModel::Periodic { period: 1_000_000 },
+            deadline: 200_000,
+            criticality: CriticalityLevel::Lo,
+            exec_times: vec![(
+                DeviceType::Cpu,
+                ExecutionTimeModel::Deterministic { wcet: 80_000 },
+            )],
+            affinity: vec![DeviceType::Cpu],
+            data_size: 0,
+        })
+        .collect();
+    engine.register_tasks(tasks);
+    engine.schedule_initial_arrivals();
+
+    let mut scheduler = FixedPriorityScheduler;
+    engine.run(&mut scheduler);
+
+    assert_eq!(engine.metrics().total_jobs, 4);
+    assert_eq!(engine.metrics().completed_jobs, 4);
+    assert_eq!(engine.metrics().deadline_misses, 0);
 }

@@ -7,12 +7,13 @@ use hprss_types::{
     Action, CriticalityLevel, DeviceId, Event, EventKind, InterconnectConfig, Job, JobId, JobState,
     Nanos, Scheduler, SharedBusConfig, Task, TaskId,
     device::{DeviceConfig, PreemptionModel},
-    task::{ArrivalModel, DeviceType, ExecutionTimeModel},
+    task::{ArrivalModel, DagTask, DeviceType, ExecutionTimeModel},
 };
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::{
+    dag_tracker::DagTracker,
     device_manager::DeviceManager,
     transfer_manager::{ScheduledEvent, TransferManager},
 };
@@ -46,6 +47,8 @@ pub struct SimEngine {
     device_mgr: DeviceManager,
     /// Transfer and bus manager
     transfer_mgr: TransferManager,
+    /// DAG dependency tracker and SubTask proxy mapping
+    dag_tracker: DagTracker,
     /// Current mixed-criticality level
     criticality_level: CriticalityLevel,
     /// Random source for stochastic execution models
@@ -74,6 +77,7 @@ impl SimEngine {
             task_registry: Vec::new(),
             device_mgr: DeviceManager::new(devices),
             transfer_mgr: TransferManager::new(interconnects, buses),
+            dag_tracker: DagTracker::new(),
             criticality_level: CriticalityLevel::Lo,
             rng: ChaCha8Rng::seed_from_u64(seed),
             metrics: MetricsCollector::new(),
@@ -85,6 +89,16 @@ impl SimEngine {
     pub fn register_tasks(&mut self, mut tasks: Vec<Task>) {
         tasks.sort_by_key(|t| t.id.0);
         self.task_registry = tasks;
+    }
+
+    /// Register DAG workloads and schedule initial source-node releases at t=0.
+    pub fn register_dags(&mut self, dags: Vec<DagTask>) {
+        for dag in dags {
+            let reg = self.dag_tracker.register_dag(dag, &mut self.task_registry);
+            for task_id in reg.ready_task_ids {
+                self.schedule_job_release(task_id, 0);
+            }
+        }
     }
 
     /// Schedule the first release for all periodic/sporadic tasks.
@@ -116,7 +130,7 @@ impl SimEngine {
         task_id: TaskId,
         release_time: Nanos,
         absolute_deadline: Nanos,
-        actual_exec_ns: Nanos,
+        actual_exec_ns: Option<Nanos>,
         priority: u32,
     ) -> JobId {
         let id = JobId(self.next_job_id);
@@ -214,6 +228,11 @@ impl SimEngine {
                     job_id, device_id, ..
                 } => {
                     self.handle_transfer_complete(job_id, device_id, scheduler);
+                }
+                EventKind::EdgeTransferComplete {
+                    edge_id, device_id, ..
+                } => {
+                    self.handle_edge_transfer_complete(edge_id, device_id);
                 }
                 EventKind::BusArbitration { bus_id } => {
                     let events = self.transfer_mgr.on_bus_arbitration(bus_id, self.now);
@@ -328,13 +347,17 @@ impl SimEngine {
                 let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
                 job.record_progress(work_done);
             }
-            job.executed_ns = job.actual_exec_ns;
+            if let Some(actual_exec_ns) = job.actual_exec_ns {
+                job.executed_ns = actual_exec_ns;
+            }
             job.exec_start_time = None;
             job.transition(JobState::Completed);
             self.metrics.record_completion(job_id, now);
         } else {
             return;
         }
+
+        self.schedule_dag_outgoing_transfers(job_id, device_id);
 
         let actions = {
             self.device_mgr
@@ -454,6 +477,31 @@ impl SimEngine {
         self.execute_actions(actions, false);
     }
 
+    fn handle_edge_transfer_complete(
+        &mut self,
+        edge_id: hprss_types::EdgeTransferId,
+        device_id: DeviceId,
+    ) {
+        tracing::trace!(
+            "t={}: EdgeTransferComplete edge={:?} dev={:?}",
+            self.now,
+            edge_id,
+            device_id
+        );
+
+        let events = self
+            .transfer_mgr
+            .on_edge_transfer_complete(edge_id, self.now);
+        self.schedule_transfer_events(events);
+
+        let released = self
+            .dag_tracker
+            .mark_edge_satisfied(edge_id.dag_instance_id, edge_id.from_node, edge_id.to_node);
+        for task_id in released {
+            self.schedule_job_release(task_id, self.now);
+        }
+    }
+
     fn handle_budget_overrun(&mut self, job_id: JobId, scheduler: &mut dyn Scheduler) {
         tracing::warn!("t={}: BudgetOverrun job={:?}", self.now, job_id);
 
@@ -533,6 +581,16 @@ impl SimEngine {
         let speed_factor = target_device.speed_factor;
         let context_switch_ns = target_device.context_switch_ns;
         let preemption = target_device.preemption.clone();
+        let Some(resolved_exec_ns) =
+            sample_exec_time_for_device(&task, target_type, self.criticality_level, &mut self.rng)
+        else {
+            tracing::warn!(
+                "No execution-time model for task={:?} on device={:?}",
+                task_id,
+                target_type
+            );
+            return;
+        };
 
         // Accelerator dispatch needs data transfer first (single source: CPU or previous device).
         if task.data_size > 0
@@ -552,6 +610,9 @@ impl SimEngine {
                     return;
                 };
                 job.assigned_device = Some(device_id);
+                if job.actual_exec_ns.is_none() {
+                    job.actual_exec_ns = Some(resolved_exec_ns);
+                }
                 job.exec_start_time = None;
                 if job.state != JobState::Transferring {
                     job.transition(JobState::Transferring);
@@ -581,6 +642,9 @@ impl SimEngine {
                 return;
             }
             job.assigned_device = Some(device_id);
+            if job.actual_exec_ns.is_none() {
+                job.actual_exec_ns = Some(resolved_exec_ns);
+            }
             job.exec_start_time = Some(now);
             job.transition(JobState::Running);
             (
@@ -785,17 +849,15 @@ impl SimEngine {
         let Some(task) = self.task(task_id).cloned() else {
             return;
         };
-        let actual_exec_ns = sample_exec_time(&task, self.criticality_level, &mut self.rng);
         let absolute_deadline = release_time.saturating_add(task.deadline);
         let priority = task.priority;
 
-        let job_id = self.create_job(
-            task_id,
-            release_time,
-            absolute_deadline,
-            actual_exec_ns,
-            priority,
-        );
+        let job_id = self.create_job(task_id, release_time, absolute_deadline, None, priority);
+        if let Some(prov) = self.dag_tracker.provenance_for_task(task_id)
+            && let Some(job) = self.get_job_mut(job_id)
+        {
+            job.dag_provenance = Some(prov);
+        }
         let expected_version = self.get_job(job_id).map_or(0, |j| j.version);
 
         self.schedule_event(release_time, EventKind::TaskArrival { task_id, job_id });
@@ -814,12 +876,60 @@ impl SimEngine {
         }
     }
 
+    fn schedule_dag_outgoing_transfers(&mut self, job_id: JobId, from_device: DeviceId) {
+        let Some(job) = self.get_job(job_id).cloned() else {
+            return;
+        };
+        let Some(prov) = job.dag_provenance else {
+            return;
+        };
+
+        for (succ_node, bytes) in self
+            .dag_tracker
+            .outgoing_edges(prov.dag_instance_id, prov.node)
+        {
+            let Some(successor_task_id) = self
+                .dag_tracker
+                .proxy_task_id(prov.dag_instance_id, succ_node)
+            else {
+                continue;
+            };
+            let Some(successor_task) = self.task(successor_task_id).cloned() else {
+                continue;
+            };
+            let Some(target_type) = successor_task.affinity.first().copied() else {
+                continue;
+            };
+            let Some(target_device) = self.device_mgr.device_for_type(target_type).map(|d| d.id) else {
+                continue;
+            };
+
+            let edge_id = hprss_types::EdgeTransferId {
+                dag_instance_id: prov.dag_instance_id,
+                from_node: prov.node,
+                to_node: succ_node,
+            };
+            let events = self.transfer_mgr.initiate_edge_transfer(
+                edge_id,
+                job_id,
+                from_device,
+                target_device,
+                bytes,
+                job.effective_priority,
+                self.now,
+                job.version,
+            );
+            self.schedule_transfer_events(events);
+        }
+    }
+
     /// Extract the job ID from an event kind (if applicable)
     fn event_job_id(kind: &EventKind) -> Option<JobId> {
         match kind {
             EventKind::JobComplete { job_id, .. }
             | EventKind::PreemptionPoint { job_id, .. }
             | EventKind::TransferComplete { job_id, .. }
+            | EventKind::EdgeTransferComplete { job_id, .. }
             | EventKind::DeadlineCheck { job_id, .. }
             | EventKind::BudgetOverrun { job_id, .. } => Some(*job_id),
             EventKind::TaskArrival { .. }
@@ -890,19 +1000,24 @@ pub struct SimResult {
     pub events_processed: u64,
 }
 
-fn sample_exec_time(task: &Task, level: CriticalityLevel, rng: &mut ChaCha8Rng) -> Nanos {
+fn sample_exec_time_for_device(
+    task: &Task,
+    device_type: DeviceType,
+    level: CriticalityLevel,
+    rng: &mut ChaCha8Rng,
+) -> Option<Nanos> {
     let model = task
         .exec_times
         .iter()
-        .find(|(dt, _)| *dt == DeviceType::Cpu)
+        .find(|(dt, _)| *dt == device_type)
         .or_else(|| task.exec_times.first())
         .map(|(_, model)| model);
 
     match model {
-        Some(ExecutionTimeModel::Deterministic { wcet }) => *wcet,
+        Some(ExecutionTimeModel::Deterministic { wcet }) => Some(*wcet),
         Some(ExecutionTimeModel::MixedCriticality { wcet_lo, wcet_hi }) => match level {
-            CriticalityLevel::Lo => *wcet_lo,
-            CriticalityLevel::Hi => *wcet_hi,
+            CriticalityLevel::Lo => Some(*wcet_lo),
+            CriticalityLevel::Hi => Some(*wcet_hi),
         },
         Some(ExecutionTimeModel::Stochastic {
             bcet,
@@ -910,7 +1025,7 @@ fn sample_exec_time(task: &Task, level: CriticalityLevel, rng: &mut ChaCha8Rng) 
             distribution,
         }) => {
             if wcet <= bcet {
-                return *bcet;
+                return Some(*bcet);
             }
             match distribution.to_ascii_lowercase().as_str() {
                 "normal" => {
@@ -920,18 +1035,18 @@ fn sample_exec_time(task: &Task, level: CriticalityLevel, rng: &mut ChaCha8Rng) 
                     let u2 = rng.gen_range(0.0..1.0);
                     let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
                     let sampled = mean + z * std;
-                    sampled.clamp(*bcet as f64, *wcet as f64).round() as u64
+                    Some(sampled.clamp(*bcet as f64, *wcet as f64).round() as u64)
                 }
                 "lognormal" => {
                     let min_ln = (*bcet as f64).ln();
                     let max_ln = (*wcet as f64).ln();
                     let sampled_ln = rng.gen_range(min_ln..=max_ln);
-                    sampled_ln.exp().round().clamp(*bcet as f64, *wcet as f64) as u64
+                    Some(sampled_ln.exp().round().clamp(*bcet as f64, *wcet as f64) as u64)
                 }
-                _ => rng.gen_range(*bcet..=*wcet),
+                _ => Some(rng.gen_range(*bcet..=*wcet)),
             }
         }
-        None => 1,
+        None => None,
     }
 }
 
@@ -963,6 +1078,7 @@ mod tests {
         DeviceConfig {
             id: DeviceId(0),
             name: "CPU".to_string(),
+            device_group: None,
             device_type: DeviceType::Cpu,
             cores: 1,
             preemption: PreemptionModel::FullyPreemptive,
@@ -1035,12 +1151,12 @@ mod tests {
 
         let mut rng = ChaCha8Rng::seed_from_u64(1);
         assert_eq!(
-            sample_exec_time(&task, CriticalityLevel::Lo, &mut rng),
-            10_000
+            sample_exec_time_for_device(&task, DeviceType::Cpu, CriticalityLevel::Lo, &mut rng),
+            Some(10_000)
         );
         assert_eq!(
-            sample_exec_time(&task, CriticalityLevel::Hi, &mut rng),
-            20_000
+            sample_exec_time_for_device(&task, DeviceType::Cpu, CriticalityLevel::Hi, &mut rng),
+            Some(20_000)
         );
     }
 }

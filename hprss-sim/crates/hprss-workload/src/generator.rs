@@ -117,6 +117,7 @@ mod tests {
             DeviceConfig {
                 id: DeviceId(0),
                 name: "CPU".into(),
+                device_group: None,
                 device_type: DeviceType::Cpu,
                 cores: 4,
                 preemption: PreemptionModel::FullyPreemptive,
@@ -128,6 +129,7 @@ mod tests {
             DeviceConfig {
                 id: DeviceId(1),
                 name: "GPU".into(),
+                device_group: None,
                 device_type: DeviceType::Gpu,
                 cores: 1,
                 preemption: PreemptionModel::LimitedPreemptive {
@@ -141,6 +143,7 @@ mod tests {
             DeviceConfig {
                 id: DeviceId(2),
                 name: "DSP".into(),
+                device_group: None,
                 device_type: DeviceType::Dsp,
                 cores: 1,
                 preemption: PreemptionModel::InterruptLevel {
@@ -155,6 +158,7 @@ mod tests {
             DeviceConfig {
                 id: DeviceId(3),
                 name: "FPGA".into(),
+                device_group: None,
                 device_type: DeviceType::Fpga,
                 cores: 1,
                 preemption: PreemptionModel::NonPreemptive {

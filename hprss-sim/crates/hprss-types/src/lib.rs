@@ -7,16 +7,20 @@
 //! - Scheduler interface (trait)
 //! - Simulation actions
 
+pub mod dag;
 pub mod device;
 pub mod event;
 pub mod job;
+pub mod policy;
 pub mod scheduler;
 pub mod task;
 pub mod time;
 
+pub use dag::*;
 pub use device::*;
 pub use event::*;
 pub use job::*;
+pub use policy::*;
 pub use scheduler::*;
 pub use task::*;
 pub use time::*;

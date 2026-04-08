@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceId, JobId, Nanos, TaskId};
+use crate::{DagProvenance, DeviceId, JobId, Nanos, TaskId};
 
 /// Job state machine:
 /// ```text
@@ -70,9 +70,14 @@ pub struct Job {
     /// Absolute deadline
     pub absolute_deadline: Nanos,
 
-    /// Actual execution time for this instance (sampled from distribution at release)
-    /// Hidden from the scheduler — only the engine knows this.
-    pub actual_exec_ns: Nanos,
+    /// Actual execution time for this instance.
+    /// Resolved by the engine when the job is dispatched to a target device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_exec_ns: Option<Nanos>,
+
+    /// DAG origin info when this job is a node instance from a DAG workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dag_provenance: Option<DagProvenance>,
 
     /// How much execution time has been consumed so far
     pub executed_ns: Nanos,
@@ -93,7 +98,7 @@ impl Job {
         task_id: TaskId,
         release_time: Nanos,
         absolute_deadline: Nanos,
-        actual_exec_ns: Nanos,
+        actual_exec_ns: Option<Nanos>,
         priority: u32,
     ) -> Self {
         Self {
@@ -104,6 +109,7 @@ impl Job {
             release_time,
             absolute_deadline,
             actual_exec_ns,
+            dag_provenance: None,
             executed_ns: 0,
             assigned_device: None,
             exec_start_time: None,
@@ -113,7 +119,9 @@ impl Job {
 
     /// Remaining execution time (only the engine should use this)
     pub fn remaining_ns(&self) -> Nanos {
-        self.actual_exec_ns.saturating_sub(self.executed_ns)
+        self.actual_exec_ns
+            .map(|actual| actual.saturating_sub(self.executed_ns))
+            .unwrap_or(0)
     }
 
     /// Transition to a new state, incrementing the version counter
@@ -144,7 +152,7 @@ mod tests {
             TaskId(0),
             0,          // release at t=0
             10_000_000, // deadline at 10ms
-            3_000_000,  // actual exec = 3ms
+            Some(3_000_000), // actual exec = 3ms
             1,
         );
 
@@ -177,8 +185,20 @@ mod tests {
 
     #[test]
     fn deadline_miss_detection() {
-        let job = Job::new(JobId(0), TaskId(0), 0, 10_000_000, 3_000_000, 1);
+        let job = Job::new(JobId(0), TaskId(0), 0, 10_000_000, Some(3_000_000), 1);
         assert!(!job.has_missed_deadline(5_000_000));
         assert!(job.has_missed_deadline(10_000_001));
+    }
+
+    #[test]
+    fn unresolved_job_has_zero_remaining_until_resolved() {
+        let job = Job::new(JobId(0), TaskId(0), 0, 10_000_000, None, 1);
+        assert_eq!(job.remaining_ns(), 0);
+    }
+
+    #[test]
+    fn new_job_has_no_dag_provenance_by_default() {
+        let job = Job::new(JobId(0), TaskId(0), 0, 10_000_000, None, 1);
+        assert!(job.dag_provenance.is_none());
     }
 }

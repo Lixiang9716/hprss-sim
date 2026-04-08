@@ -6,9 +6,43 @@ duration_ms = 10000         # 10s simulation
 seed = 42
 
 [[device]]
-name = "FT2000"
+name = "FT2000-core0"
+device_group = "FT2000"
 type = "cpu"
-cores = 4
+cores = 1
+preemption = "fully_preemptive"
+context_switch_us = 5
+speed_factor = 1.0
+multicore_policy = "partitioned"
+power_watts = 15.0
+
+[[device]]
+name = "FT2000-core1"
+device_group = "FT2000"
+type = "cpu"
+cores = 1
+preemption = "fully_preemptive"
+context_switch_us = 5
+speed_factor = 1.0
+multicore_policy = "partitioned"
+power_watts = 15.0
+
+[[device]]
+name = "FT2000-core2"
+device_group = "FT2000"
+type = "cpu"
+cores = 1
+preemption = "fully_preemptive"
+context_switch_us = 5
+speed_factor = 1.0
+multicore_policy = "partitioned"
+power_watts = 15.0
+
+[[device]]
+name = "FT2000-core3"
+device_group = "FT2000"
+type = "cpu"
+cores = 1
 preemption = "fully_preemptive"
 context_switch_us = 5
 speed_factor = 1.0
@@ -47,7 +81,7 @@ speed_factor = 15.0
 power_watts = 5.0
 
 [[interconnect]]
-from = "FT2000"
+from = "FT2000-core0"
 to = "GP201"
 latency_us = 2.0
 bandwidth_gbps = 12.0
@@ -55,7 +89,31 @@ shared_bus = "pcie_bus"
 arbitration = "priority_based"
 
 [[interconnect]]
-from = "FT2000"
+from = "FT2000-core1"
+to = "GP201"
+latency_us = 2.0
+bandwidth_gbps = 12.0
+shared_bus = "pcie_bus"
+arbitration = "priority_based"
+
+[[interconnect]]
+from = "FT2000-core2"
+to = "GP201"
+latency_us = 2.0
+bandwidth_gbps = 12.0
+shared_bus = "pcie_bus"
+arbitration = "priority_based"
+
+[[interconnect]]
+from = "FT2000-core3"
+to = "GP201"
+latency_us = 2.0
+bandwidth_gbps = 12.0
+shared_bus = "pcie_bus"
+arbitration = "priority_based"
+
+[[interconnect]]
+from = "FT2000-core0"
 to = "FT6678"
 latency_us = 1.0
 bandwidth_gbps = 5.0
@@ -63,7 +121,52 @@ shared_bus = "srio_bus"
 arbitration = "round_robin"
 
 [[interconnect]]
-from = "FT2000"
+from = "FT2000-core1"
+to = "FT6678"
+latency_us = 1.0
+bandwidth_gbps = 5.0
+shared_bus = "srio_bus"
+arbitration = "round_robin"
+
+[[interconnect]]
+from = "FT2000-core2"
+to = "FT6678"
+latency_us = 1.0
+bandwidth_gbps = 5.0
+shared_bus = "srio_bus"
+arbitration = "round_robin"
+
+[[interconnect]]
+from = "FT2000-core3"
+to = "FT6678"
+latency_us = 1.0
+bandwidth_gbps = 5.0
+shared_bus = "srio_bus"
+arbitration = "round_robin"
+
+[[interconnect]]
+from = "FT2000-core0"
+to = "Zynq_FPGA"
+latency_us = 0.1
+bandwidth_gbps = 4.0
+arbitration = "dedicated"
+
+[[interconnect]]
+from = "FT2000-core1"
+to = "Zynq_FPGA"
+latency_us = 0.1
+bandwidth_gbps = 4.0
+arbitration = "dedicated"
+
+[[interconnect]]
+from = "FT2000-core2"
+to = "Zynq_FPGA"
+latency_us = 0.1
+bandwidth_gbps = 4.0
+arbitration = "dedicated"
+
+[[interconnect]]
+from = "FT2000-core3"
 to = "Zynq_FPGA"
 latency_us = 0.1
 bandwidth_gbps = 4.0

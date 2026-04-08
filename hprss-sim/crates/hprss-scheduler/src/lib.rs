@@ -13,18 +13,32 @@ impl Scheduler for FixedPriorityScheduler {
     }
 
     fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action> {
-        // Basic strategy: find the first available device in affinity list,
-        // check if preemption is needed
-        let target_device = task
+        // Choose a compatible device, preferring idle then shorter ready queue.
+        let candidates: Vec<DeviceId> = task
             .affinity
             .iter()
-            .filter_map(|dt| {
+            .flat_map(|dt| {
                 view.devices
                     .iter()
-                    .find(|d| d.device_type == *dt)
+                    .filter(move |d| d.device_type == *dt)
                     .map(|d| d.id)
             })
-            .next();
+            .collect();
+
+        let target_device = candidates.into_iter().min_by_key(|device_id| {
+            let is_running = view
+                .running_jobs
+                .iter()
+                .find(|(did, _)| did == device_id)
+                .and_then(|(_, info)| info.as_ref())
+                .is_some();
+            let queue_len = view
+                .ready_queues
+                .iter()
+                .find(|(did, _)| did == device_id)
+                .map_or(0, |(_, q)| q.len());
+            (is_running as u8, queue_len)
+        });
 
         match target_device {
             Some(device_id) => {

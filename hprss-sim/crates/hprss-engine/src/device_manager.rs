@@ -210,6 +210,7 @@ mod tests {
         DeviceConfig {
             id: DeviceId(id),
             name: format!("cpu{id}"),
+            device_group: None,
             device_type: DeviceType::Cpu,
             cores: 1,
             preemption: PreemptionModel::FullyPreemptive,
@@ -272,10 +273,10 @@ mod tests {
         dm.set_running(DeviceId(0), JobId(0));
         dm.enqueue(DeviceId(1), JobId(1), 2);
 
-        let mut job0 = Job::new(JobId(0), TaskId(0), 0, 10_000_000, 3_000_000, 1);
+        let mut job0 = Job::new(JobId(0), TaskId(0), 0, 10_000_000, Some(3_000_000), 1);
         job0.exec_start_time = Some(500_000);
 
-        let job1 = Job::new(JobId(1), TaskId(0), 0, 10_000_000, 3_000_000, 2);
+        let job1 = Job::new(JobId(1), TaskId(0), 0, 10_000_000, Some(3_000_000), 2);
 
         let jobs: Vec<Option<Job>> = vec![Some(job0), Some(job1)];
 
