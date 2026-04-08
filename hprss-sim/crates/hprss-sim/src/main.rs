@@ -1,5 +1,7 @@
-use std::path::PathBuf;
-use std::time::Instant;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -169,8 +171,40 @@ struct SweepRow {
     deadline_misses: u64,
     miss_ratio: f64,
     schedulable: bool,
+    makespan: u64,
+    avg_response_time: f64,
     events_processed: u64,
     wall_time_us: u64,
+    config_hash: String,
+    git_commit: String,
+    timestamp: String,
+}
+
+fn config_hash(path: &Path) -> anyhow::Result<String> {
+    let content = std::fs::read(path)
+        .with_context(|| format!("failed to read config: {}", path.display()))?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn git_commit() -> String {
+    ProcessCommand::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn run_timestamp() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 /// Run a single simulation and return the result with timing.
@@ -244,6 +278,8 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
     println!("deadline_misses : {}", result.deadline_misses);
     println!("miss_ratio      : {:.6}", result.miss_ratio);
     println!("schedulable     : {}", result.schedulable);
+    println!("makespan_ns     : {}", result.makespan);
+    println!("avg_response_ns : {:.3}", result.avg_response_time);
     println!("events_processed: {}", result.events_processed);
     println!("wall_time_us    : {wall_us}");
 
@@ -258,6 +294,9 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
             platform_path.display()
         )
     })?;
+    let run_config_hash = config_hash(platform_path)?;
+    let run_git_commit = git_commit();
+    let run_timestamp = run_timestamp();
 
     let utilizations = parse_range_f64(&sweep.utilizations)
         .map_err(|e| anyhow::anyhow!("bad --utilizations: {e}"))?;
@@ -268,8 +307,8 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
         .collect::<Result<_, _>>()
         .map_err(|e| anyhow::anyhow!("bad --task-counts: {e}"))?;
     let seeds = parse_range_u64(&sweep.seeds).map_err(|e| anyhow::anyhow!("bad --seeds: {e}"))?;
-    let schedulers =
-        parse_scheduler_list(&sweep.schedulers).map_err(|e| anyhow::anyhow!("bad --schedulers: {e}"))?;
+    let schedulers = parse_scheduler_list(&sweep.schedulers)
+        .map_err(|e| anyhow::anyhow!("bad --schedulers: {e}"))?;
 
     // Build cartesian product of (utilization, task_count, seed, scheduler)
     let mut configs: Vec<(f64, usize, u64, SchedulerKind)> = Vec::new();
@@ -322,8 +361,13 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
                     deadline_misses: sim.deadline_misses,
                     miss_ratio: sim.miss_ratio,
                     schedulable: sim.schedulable,
+                    makespan: sim.makespan,
+                    avg_response_time: sim.avg_response_time,
                     events_processed: sim.events_processed,
                     wall_time_us: wall_us,
+                    config_hash: run_config_hash.clone(),
+                    git_commit: run_git_commit.clone(),
+                    timestamp: run_timestamp.clone(),
                 }),
                 Err(e) => {
                     eprintln!(
@@ -449,5 +493,51 @@ mod tests {
             cli.trace_output.as_deref(),
             Some(std::path::Path::new("/tmp/trace.jsonl"))
         );
+    }
+
+    #[test]
+    fn sweep_row_includes_paper_metrics_and_repro_metadata() {
+        let row = SweepRow {
+            utilization: 0.7,
+            task_count: 16,
+            seed: 11,
+            algorithm: "FP-Het".to_string(),
+            total_jobs: 100,
+            completed_jobs: 95,
+            deadline_misses: 5,
+            miss_ratio: 0.05,
+            schedulable: false,
+            makespan: 9_000,
+            avg_response_time: 450.0,
+            events_processed: 123,
+            wall_time_us: 77,
+            config_hash: "abc123".to_string(),
+            git_commit: "deadbeef".to_string(),
+            timestamp: "2026-04-08T10:15:00Z".to_string(),
+        };
+
+        let mut writer = csv::Writer::from_writer(vec![]);
+        writer.serialize(&row).expect("row should serialize");
+        let output = String::from_utf8(
+            writer
+                .into_inner()
+                .expect("csv writer should provide underlying buffer"),
+        )
+        .expect("csv output should be utf8");
+
+        assert!(output.contains("makespan"));
+        assert!(output.contains("avg_response_time"));
+        assert!(output.contains("config_hash"));
+        assert!(output.contains("git_commit"));
+        assert!(output.contains("timestamp"));
+    }
+
+    #[test]
+    fn reproducibility_metadata_helpers_produce_values() {
+        let cargo_toml = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let hash = config_hash(&cargo_toml).expect("config hash should be generated");
+        assert!(!hash.is_empty());
+        assert!(!git_commit().is_empty());
+        assert!(!run_timestamp().is_empty());
     }
 }

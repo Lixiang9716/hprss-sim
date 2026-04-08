@@ -196,15 +196,18 @@ mod tests {
         let view = SchedulerView {
             now: 1_000,
             devices: std::slice::from_ref(&device),
-            running_jobs: &[(DeviceId(0), Some(RunningJobInfo {
-                job_id: JobId(7),
-                task_id: TaskId(7),
-                priority: 10,
-                release_time: 0,
-                absolute_deadline: 50_000,
-                criticality: CriticalityLevel::Lo,
-                elapsed_ns: 100,
-            }))],
+            running_jobs: &[(
+                DeviceId(0),
+                Some(RunningJobInfo {
+                    job_id: JobId(7),
+                    task_id: TaskId(7),
+                    priority: 10,
+                    release_time: 0,
+                    absolute_deadline: 50_000,
+                    criticality: CriticalityLevel::Lo,
+                    elapsed_ns: 100,
+                }),
+            )],
             ready_queues: &[(DeviceId(0), vec![])],
             criticality_level: CriticalityLevel::Lo,
         };

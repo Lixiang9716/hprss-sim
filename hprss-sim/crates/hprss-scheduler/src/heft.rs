@@ -212,7 +212,8 @@ fn map_nodes(dag: &DagTask, devices: &[DeviceConfig], rank_u: &[f64]) -> Vec<Dev
         }
     }
 
-    let mut device_available: HashMap<DeviceId, f64> = devices.iter().map(|d| (d.id, 0.0)).collect();
+    let mut device_available: HashMap<DeviceId, f64> =
+        devices.iter().map(|d| (d.id, 0.0)).collect();
     let mut mapping = vec![devices[0].id; dag.nodes.len()];
     let mut finish_time = vec![0.0f64; dag.nodes.len()];
     let mut scheduled = vec![false; dag.nodes.len()];

@@ -86,6 +86,26 @@ impl MetricsCollector {
         self.deadline_misses == 0
     }
 
+    /// Total elapsed time from earliest release to latest completion.
+    pub fn makespan(&self) -> Option<Nanos> {
+        let first_release = self.completions.iter().map(|c| c.release_time).min()?;
+        let last_completion = self.completions.iter().map(|c| c.completion_time).max()?;
+        Some(last_completion.saturating_sub(first_release))
+    }
+
+    /// Average response time across completed jobs, in nanoseconds.
+    pub fn avg_response_time(&self) -> Option<f64> {
+        if self.completions.is_empty() {
+            return None;
+        }
+        let total_response: u128 = self
+            .completions
+            .iter()
+            .map(|c| c.completion_time.saturating_sub(c.release_time) as u128)
+            .sum();
+        Some(total_response as f64 / self.completions.len() as f64)
+    }
+
     /// Serialize completion/miss timeline into JSON-lines text.
     pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
         let mut rows = Vec::new();
@@ -124,7 +144,10 @@ impl MetricsCollector {
 }
 
 /// Compute max end-to-end reaction time for a task chain from completion records.
-pub fn max_chain_reaction_time(chain: &TaskChain, completions: &[CompletionRecord]) -> Option<Nanos> {
+pub fn max_chain_reaction_time(
+    chain: &TaskChain,
+    completions: &[CompletionRecord],
+) -> Option<Nanos> {
     if chain.tasks.is_empty() {
         return None;
     }
@@ -171,6 +194,18 @@ mod tests {
         assert_eq!(m.deadline_misses, 1);
         assert!((m.miss_ratio() - 0.5).abs() < f64::EPSILON);
         assert!(!m.is_schedulable());
+    }
+
+    #[test]
+    fn paper_metrics_are_computed() {
+        let mut m = MetricsCollector::new();
+        m.record_job_release();
+        m.record_job_release();
+        m.record_completion(JobId(0), TaskId(0), 10, 110);
+        m.record_completion(JobId(1), TaskId(1), 20, 170);
+
+        assert_eq!(m.makespan(), Some(160));
+        assert_eq!(m.avg_response_time(), Some(125.0));
     }
 
     #[test]

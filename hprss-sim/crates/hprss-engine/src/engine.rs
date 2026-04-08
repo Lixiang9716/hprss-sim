@@ -499,9 +499,11 @@ impl SimEngine {
             .on_edge_transfer_complete(edge_id, self.now);
         self.schedule_transfer_events(events);
 
-        let released = self
-            .dag_tracker
-            .mark_edge_satisfied(edge_id.dag_instance_id, edge_id.from_node, edge_id.to_node);
+        let released = self.dag_tracker.mark_edge_satisfied(
+            edge_id.dag_instance_id,
+            edge_id.from_node,
+            edge_id.to_node,
+        );
         for task_id in released {
             self.schedule_job_release(task_id, self.now);
         }
@@ -905,7 +907,8 @@ impl SimEngine {
             let Some(target_type) = successor_task.affinity.first().copied() else {
                 continue;
             };
-            let Some(target_device) = self.device_mgr.device_for_type(target_type).map(|d| d.id) else {
+            let Some(target_device) = self.device_mgr.device_for_type(target_type).map(|d| d.id)
+            else {
                 continue;
             };
 
@@ -989,6 +992,8 @@ impl SimEngine {
             deadline_misses: m.deadline_misses,
             miss_ratio: m.miss_ratio(),
             schedulable: m.is_schedulable(),
+            makespan: m.makespan().unwrap_or(0),
+            avg_response_time: m.avg_response_time().unwrap_or(0.0),
             events_processed: self.events_processed,
         }
     }
@@ -1006,6 +1011,8 @@ pub struct SimResult {
     pub deadline_misses: u64,
     pub miss_ratio: f64,
     pub schedulable: bool,
+    pub makespan: Nanos,
+    pub avg_response_time: f64,
     pub events_processed: u64,
 }
 
