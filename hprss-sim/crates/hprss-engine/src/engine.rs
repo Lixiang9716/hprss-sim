@@ -3,11 +3,12 @@
 use std::collections::BinaryHeap;
 use std::path::Path;
 
+use hprss_devices::{DispatchTimingInput, PreemptionCheckInput, VirtualDeviceModel};
 use hprss_metrics::{BlockingBreakdown, DeviceUtilization, MetricsCollector};
 use hprss_types::{
     Action, CriticalityLevel, DeviceId, Event, EventKind, InterconnectConfig, Job, JobId, JobState,
     Nanos, ReevaluationTrigger, Scheduler, SharedBusConfig, Task, TaskId,
-    device::{DeviceConfig, PreemptionModel},
+    device::DeviceConfig,
     task::{ArrivalModel, DagTask, DeviceType, ExecutionTimeModel},
 };
 use rand::{Rng, SeedableRng};
@@ -472,14 +473,8 @@ impl SimEngine {
 
         // If no preemption happened, reschedule next preemption point for the same running job.
         if self.device_mgr.running_job(device_id) == Some(job_id) {
-            let interval = match self.device_mgr.device(device_id).preemption {
-                PreemptionModel::LimitedPreemptive { granularity_ns } => Some(granularity_ns),
-                PreemptionModel::InterruptLevel {
-                    dma_non_preemptive_ns,
-                    ..
-                } => Some(dma_non_preemptive_ns),
-                PreemptionModel::FullyPreemptive | PreemptionModel::NonPreemptive { .. } => None,
-            };
+            let model = VirtualDeviceModel::from_device(self.device_mgr.device(device_id));
+            let interval = model.preemption_point_interval_ns();
             if let Some(interval_ns) = interval
                 && let Some(job) = self.get_job(job_id)
             {
@@ -668,12 +663,12 @@ impl SimEngine {
                     by,
                     device_id,
                 } => {
-                    let allow_now = match self.device_mgr.device(device_id).preemption {
-                        PreemptionModel::FullyPreemptive => true,
-                        PreemptionModel::LimitedPreemptive { .. }
-                        | PreemptionModel::InterruptLevel { .. } => at_preemption_point,
-                        PreemptionModel::NonPreemptive { .. } => false,
-                    };
+                    let model = VirtualDeviceModel::from_device(self.device_mgr.device(device_id));
+                    let allow_now = model
+                        .evaluate_preemption(PreemptionCheckInput {
+                            at_preemption_point,
+                        })
+                        .allows_preemption_now();
                     if allow_now {
                         self.preempt_job(victim, by, device_id);
                     } else {
@@ -713,7 +708,7 @@ impl SimEngine {
         let target_type = target_device.device_type;
         let speed_factor = target_device.speed_factor;
         let context_switch_ns = target_device.context_switch_ns;
-        let preemption = target_device.preemption.clone();
+        let virtual_model = VirtualDeviceModel::from_device(target_device);
         let Some(resolved_exec_ns) =
             sample_exec_time_for_device(&task, target_type, self.criticality_level, &mut self.rng)
         else {
@@ -792,9 +787,13 @@ impl SimEngine {
         self.device_mgr.set_running(device_id, job_id);
 
         let wall_exec_ns = work_to_wall(remaining_work, speed_factor);
+        let dispatch_timing = virtual_model.evaluate_dispatch_timing(DispatchTimingInput {
+            now_ns: now,
+            context_switch_ns,
+            remaining_exec_wall_ns: wall_exec_ns,
+        });
         self.schedule_event(
-            now.saturating_add(context_switch_ns)
-                .saturating_add(wall_exec_ns),
+            dispatch_timing.completion_time_ns,
             EventKind::JobComplete {
                 job_id,
                 expected_version,
@@ -816,31 +815,15 @@ impl SimEngine {
             );
         }
 
-        match preemption {
-            PreemptionModel::LimitedPreemptive { granularity_ns } => {
-                self.schedule_event(
-                    now.saturating_add(granularity_ns),
-                    EventKind::PreemptionPoint {
-                        device_id,
-                        job_id,
-                        expected_version,
-                    },
-                );
-            }
-            PreemptionModel::InterruptLevel {
-                dma_non_preemptive_ns,
-                ..
-            } => {
-                self.schedule_event(
-                    now.saturating_add(dma_non_preemptive_ns),
-                    EventKind::PreemptionPoint {
-                        device_id,
-                        job_id,
-                        expected_version,
-                    },
-                );
-            }
-            PreemptionModel::FullyPreemptive | PreemptionModel::NonPreemptive { .. } => {}
+        if let Some(next_preemption_point_ns) = dispatch_timing.next_preemption_point_ns {
+            self.schedule_event(
+                next_preemption_point_ns,
+                EventKind::PreemptionPoint {
+                    device_id,
+                    job_id,
+                    expected_version,
+                },
+            );
         }
     }
 
@@ -1383,6 +1366,7 @@ fn wall_to_work(wall_ns: Nanos, speed_factor: f64) -> Nanos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hprss_types::device::PreemptionModel;
 
     fn cpu_device() -> DeviceConfig {
         DeviceConfig {
