@@ -1094,9 +1094,11 @@ pub struct SimResult {
     pub migration_count: u64,
     pub bus_contention_ratio: f64,
     pub events_processed: u64,
-    /// Conservative energy estimate:
-    /// Σ over devices (power_watts × (busy_ns + transfer_overhead_ns) / 1e9).
-    /// Missing power is treated as zero contribution.
+    /// Conservative deterministic energy estimate:
+    /// - execution: Σ_i(power_i_watts × busy_i_seconds)
+    /// - transfer upper bound (single-count): transfer_overhead_seconds × max_i(power_i_watts)
+    ///
+    /// Missing/negative power values are treated as zero contribution.
     pub energy_total_joules: f64,
 }
 
@@ -1105,7 +1107,7 @@ fn energy_total_joules(
     per_device_busy: &[(DeviceId, Nanos)],
     transfer_overhead_ns: Nanos,
 ) -> f64 {
-    devices
+    let execution_joules: f64 = devices
         .iter()
         .map(|device| {
             let power_watts = device.power_watts.unwrap_or(0.0).max(0.0);
@@ -1113,10 +1115,16 @@ fn energy_total_joules(
                 .iter()
                 .find_map(|(device_id, busy_ns)| (*device_id == device.id).then_some(*busy_ns))
                 .unwrap_or(0);
-            let active_ns = busy_ns.saturating_add(transfer_overhead_ns);
-            power_watts * (active_ns as f64 / 1_000_000_000.0)
+            power_watts * (busy_ns as f64 / 1_000_000_000.0)
         })
-        .sum()
+        .sum();
+    let max_power_watts = devices
+        .iter()
+        .filter_map(|d| d.power_watts)
+        .fold(0.0_f64, f64::max);
+    let transfer_joules =
+        max_power_watts.max(0.0) * (transfer_overhead_ns as f64 / 1_000_000_000.0);
+    execution_joules + transfer_joules
 }
 
 fn sample_exec_time_for_device(
@@ -1393,9 +1401,10 @@ mod tests {
         assert_eq!(summary.per_device_utilization.len(), 2);
         assert!((summary.per_device_utilization[0].utilization - 0.4).abs() < f64::EPSILON);
         assert!((summary.per_device_utilization[1].utilization - 0.6).abs() < f64::EPSILON);
-        // Device 0: 10W * (80ns + 400ns), Device 1: 20W * (120ns + 400ns).
+        // Device execution: 10W*80ns + 20W*120ns.
+        // Transfer upper bound (counted once): 400ns * max(10W, 20W).
         assert!(
-            (summary.energy_total_joules - 15_200.0e-9).abs() < f64::EPSILON,
+            (summary.energy_total_joules - 11_200.0e-9).abs() < f64::EPSILON,
             "energy should include per-device busy time and transfer overhead"
         );
     }
@@ -1419,5 +1428,38 @@ mod tests {
 
         let summary = engine.summary();
         assert_eq!(summary.energy_total_joules, 0.0);
+    }
+
+    #[test]
+    fn summary_energy_does_not_multiply_transfer_by_device_count() {
+        let devices = vec![
+            DeviceConfig {
+                id: DeviceId(0),
+                power_watts: Some(5.0),
+                ..cpu_device()
+            },
+            DeviceConfig {
+                id: DeviceId(1),
+                name: "CPU-1".to_string(),
+                power_watts: Some(10.0),
+                ..cpu_device()
+            },
+            DeviceConfig {
+                id: DeviceId(2),
+                name: "CPU-2".to_string(),
+                power_watts: Some(20.0),
+                ..cpu_device()
+            },
+        ];
+
+        let energy = energy_total_joules(
+            &devices,
+            &[(DeviceId(0), 100), (DeviceId(1), 100), (DeviceId(2), 100)],
+            50,
+        );
+
+        // Execution: (5+10+20)W * 100ns = 3500e-9 J
+        // Transfer counted once: 20W * 50ns = 1000e-9 J
+        assert!((energy - 4_500.0e-9).abs() < f64::EPSILON);
     }
 }
