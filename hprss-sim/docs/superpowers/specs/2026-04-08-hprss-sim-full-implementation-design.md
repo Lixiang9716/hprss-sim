@@ -6,21 +6,48 @@
 
 ---
 
+## 0. 实现落地更新（Phase2 最终核对）
+
+> 本文最初是设计规格；以下条目用于覆盖后续实现状态，优先于下文的“未实现/未来工作”历史描述。
+
+- 调度器能力已扩展为：`fp, edf, edfvd, llf, heft, cpedf, federated`
+- CLI 已支持 replay 模式：`--replay-json` 与 `--replay-csv-tasks/--replay-csv-jobs`
+- `hprss-devices` 已提供虚拟设备抢占模型测试（fully/limited/interrupt/non-preemptive）
+- Sweep 输出已包含扩展论文指标与复现实验元数据（算法标签、运行指纹/版本信息）
+- 绘图工作流固定为 `python3 scripts/plot_experiments.py ...` 与 `make plot-test` 回归检查
+
+推荐命令（与当前实现一致）：
+
+```bash
+# 多调度器扫参
+cargo run --release -p hprss-sim -- --platform configs/platform_ft2000_full.toml \
+  sweep --schedulers fp,edf,edfvd,llf,heft,cpedf,federated \
+  --utilizations 0.5:0.1:0.9 --task-counts 10,50,100 --seeds 1:5 --output sweep_results.csv
+
+# replay 重放（CSV）
+cargo run -p hprss-sim -- --platform configs/platform_ft2000_full.toml \
+  --replay-csv-tasks crates/hprss-workload/tests/fixtures/replay_tasks.csv \
+  --replay-csv-jobs crates/hprss-workload/tests/fixtures/replay_jobs.csv \
+  --scheduler llf
+
+# 绘图
+python3 scripts/plot_experiments.py --csv sweep_results.csv --output-dir plots
+```
+
+---
+
 ## 1. 项目现状
 
-### 1.1 已完成 (4,210 LOC, 35 tests)
-- DES 引擎闭环 (事件驱动 + 4 种抢占模型 + 版本失效)
-- FP-Het 调度器 (到达/完成/抢占点/MC 切换)
-- 平台 TOML 加载 + 总线仲裁 + 数据传输
-- UUniFast 工作负载生成 + CLI (单次运行 + 并行扫参)
-- BTreeMap 优化 (13.2x 加速)
+### 1.1 已完成（截至 Phase2）
+- DES 引擎闭环（事件驱动 + 4 种抢占模型 + 版本失效）
+- 调度器集合：FP / EDF / EDF-VD / LLF / HEFT / CP-EDF / Federated
+- 平台 TOML 加载 + 总线仲裁 + 数据传输 + DAG 流程
+- 工作负载：UUniFast 生成 + Replay(JSON/CSV) + CLI 单次运行/并行扫参
+- 可视化工作流：`scripts/plot_experiments.py` + `make plot-test`
 
-### 1.2 未实现
-- hprss-validate: 空桩
-- hprss-devices: 空桩
-- 仅 1 个调度器 (FP)，无 EDF/LLF/HEFT
-- 无 DAG 任务支持
-- 无可视化输出
+### 1.2 仍在迭代
+- `hprss-validate` 仍以增量补齐为主（非空桩，但持续扩展中）
+- 高级并行仿真（PDES）与更深层理论验证仍属后续阶段
 
 ### 1.3 现存 Bug (Phase 1 必须修复)
 

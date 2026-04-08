@@ -130,7 +130,7 @@ CSV via `csv` + `serde::Serialize` with columns: `utilization, task_count, seed,
 
 ### 3.5 Limitations / Future Work
 
-- **`--algorithms` parameter**: Not yet implemented. Currently hardcoded to `FP-Het` since only one scheduler exists. When EDF/LLF schedulers are added, extend `SweepRow.algorithm` and add `--algorithms` flag.
+- **Algorithm sweep parameter**: 已实现为 `--schedulers`（支持 `fp,edf,edfvd,llf,heft,cpedf,federated`），`SweepRow.algorithm` 已随结果落盘。
 - **SimResult struct**: Added to `hprss_engine::engine` with serde `Serialize` derive for downstream consumption.
 
 ## Phase 4 (Future): PDES Exploration
