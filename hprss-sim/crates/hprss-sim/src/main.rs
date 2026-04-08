@@ -337,7 +337,16 @@ fn run_single(
                     job.actual_exec_ns,
                     priority,
                 );
+                let expected_version = engine.get_job(job_id).map_or(0, |job| job.version);
                 engine.schedule_event(job.release_ns, EventKind::TaskArrival { task_id, job_id });
+                let deadline_check_time = absolute_deadline.saturating_add(1);
+                engine.schedule_event(
+                    deadline_check_time,
+                    EventKind::DeadlineCheck {
+                        job_id,
+                        expected_version,
+                    },
+                );
             }
         }
     }
@@ -908,12 +917,51 @@ mod tests {
             .expect("second replay run should succeed");
 
         assert_eq!(first.total_jobs, 2);
-        assert_eq!(first.completed_jobs, 2);
-        assert_eq!(first.deadline_misses, 0);
+        assert_eq!(
+            first.completed_jobs + first.deadline_misses,
+            first.total_jobs,
+            "replay jobs should resolve as completed or deadline-missed"
+        );
         assert_eq!(first.total_jobs, second.total_jobs);
         assert_eq!(first.completed_jobs, second.completed_jobs);
         assert_eq!(first.deadline_misses, second.deadline_misses);
         assert_eq!(first.makespan, second.makespan);
         assert_eq!(first.transfer_overhead, second.transfer_overhead);
+    }
+
+    #[test]
+    fn replay_json_cli_path_accounts_for_deadline_miss() {
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root should resolve");
+        let platform_path = workspace_root.join("configs/platform_ft2000_full.toml");
+        let replay_json =
+            workspace_root.join("crates/hprss-workload/tests/fixtures/replay_deadline_miss.json");
+
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            platform_path.to_str().expect("utf8 path"),
+            "--replay-json",
+            replay_json.to_str().expect("utf8 path"),
+            "--scheduler",
+            "fp",
+        ])
+        .expect("cli parsing should succeed");
+
+        let workload = load_workload_input(&cli).expect("replay workload should load");
+        let platform =
+            PlatformConfig::load(&platform_path).expect("platform fixture should load for replay test");
+        let seed = cli.seed.unwrap_or(platform.simulation.seed);
+
+        let (result, _) =
+            run_single(&platform, &workload, seed, cli.scheduler, None).expect("run should succeed");
+
+        assert_eq!(result.total_jobs, 1);
+        assert!(
+            result.deadline_misses > 0,
+            "replay job should be counted as deadline miss"
+        );
     }
 }
