@@ -3,18 +3,29 @@
 **Date**: 2026-04-08
 **Platform**: FT2000 (CPU+GPU+DSP+FPGA), 10s simulated
 
-## Benchmark Results (Criterion)
+## Benchmark Results — Before Optimization (Criterion)
 
 | Tasks | Wall Time | Events | Growth |
 |-------|-----------|--------|--------|
 | 30    | 3.1ms     | ~10K   | 1x     |
 | 100   | 10.9ms    | ~36K   | 3.5x   |
 | 250   | 2.7s      | ~226K  | 870x   |
-| 500   | 21.4s     | ~550K  | 6900x  |
+| 500   | 21.4s     | ~451K  | 6900x  |
 
 **O(N²+) scaling detected**: 100→250 tasks (2.5x) causes 248x slowdown.
 
-## Perf Profile (flat, 250 tasks)
+## Benchmark Results — After Optimization
+
+| Tasks | Before  | After  | Speedup  | Events  |
+|-------|---------|--------|----------|---------|
+| 30    | 3.1ms   | 2.6ms  | 1.2x     | ~10K    |
+| 100   | 10.9ms  | 9.2ms  | 1.2x     | ~36K    |
+| 250   | 2.7s    | 252ms  | **10.7x** | ~226K   |
+| 500   | 21.4s   | 1.62s  | **13.2x** | ~451K   |
+
+Optimizations applied: BTreeMap ready queues, per-device dirty-flag rebuild, pre-allocated view buffers.
+
+## Perf Profile (flat, 250 tasks, pre-optimization)
 
 | % CPU | Function |
 |-------|----------|
