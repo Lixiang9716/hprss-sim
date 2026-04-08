@@ -4,11 +4,13 @@
 
 pub mod edf;
 pub mod heft;
+pub mod llf;
 
 use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
 pub use edf::EdfScheduler;
 pub use heft::{HeftPlan, HeftPlanner, HeftScheduler};
+pub use llf::LlfScheduler;
 
 /// Fixed-Priority scheduler (Rate Monotonic as default priority assignment)
 pub struct FixedPriorityScheduler;
@@ -179,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_schedulers_keep_reevaluation_disabled_by_default() {
+    fn fp_edf_heft_keep_reevaluation_disabled_by_default() {
         assert_eq!(
             FixedPriorityScheduler.reevaluation_policy(),
             ReevaluationPolicy::Disabled
@@ -191,6 +193,17 @@ mod tests {
         assert_eq!(
             crate::heft::HeftScheduler::default().reevaluation_policy(),
             ReevaluationPolicy::Disabled
+        );
+    }
+
+    #[test]
+    fn llf_enables_hybrid_reevaluation_by_default() {
+        assert_eq!(
+            crate::llf::LlfScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Hybrid {
+                interval_ns: 5_000,
+                min_interval_ns: 1_000
+            }
         );
     }
 

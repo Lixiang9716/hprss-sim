@@ -7,7 +7,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use hprss_engine::engine::{SimConfig, SimEngine, SimResult};
 use hprss_platform::PlatformConfig;
-use hprss_scheduler::{EdfScheduler, FixedPriorityScheduler, HeftScheduler};
+use hprss_scheduler::{EdfScheduler, FixedPriorityScheduler, HeftScheduler, LlfScheduler};
 use hprss_types::Scheduler;
 use hprss_workload::{WorkloadConfig, generate_taskset};
 use rayon::prelude::*;
@@ -79,8 +79,8 @@ struct SweepArgs {
     #[arg(long, default_value_t = 0)]
     jobs: usize,
 
-    /// Comma-separated algorithms (fp,edf,heft)
-    #[arg(long, default_value = "fp,edf,heft")]
+    /// Comma-separated algorithms (fp,edf,llf,heft)
+    #[arg(long, default_value = "fp,edf,llf,heft")]
     schedulers: String,
 }
 
@@ -88,6 +88,7 @@ struct SweepArgs {
 enum SchedulerKind {
     Fp,
     Edf,
+    Llf,
     Heft,
 }
 
@@ -141,6 +142,7 @@ fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String> {
         let kind = match token.to_ascii_lowercase().as_str() {
             "fp" => SchedulerKind::Fp,
             "edf" => SchedulerKind::Edf,
+            "llf" => SchedulerKind::Llf,
             "heft" => SchedulerKind::Heft,
             _ => return Err(format!("unknown scheduler: {token}")),
         };
@@ -438,6 +440,7 @@ fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
     match kind {
         SchedulerKind::Fp => Box::new(FixedPriorityScheduler),
         SchedulerKind::Edf => Box::new(EdfScheduler),
+        SchedulerKind::Llf => Box::new(LlfScheduler::default()),
         SchedulerKind::Heft => Box::new(HeftScheduler::default()),
     }
 }
@@ -446,6 +449,7 @@ fn scheduler_label(kind: SchedulerKind) -> &'static str {
     match kind {
         SchedulerKind::Fp => "FP-Het",
         SchedulerKind::Edf => "EDF-Het",
+        SchedulerKind::Llf => "LLF-Het",
         SchedulerKind::Heft => "HEFT",
     }
 }
@@ -491,11 +495,29 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_llf_scheduler_switch() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--scheduler",
+            "llf",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(cli.scheduler, SchedulerKind::Llf);
+    }
+
+    #[test]
     fn parse_scheduler_list_supports_multiple_algorithms() {
-        let parsed = parse_scheduler_list("fp,edf,heft").expect("parse should succeed");
+        let parsed = parse_scheduler_list("fp,edf,llf,heft").expect("parse should succeed");
         assert_eq!(
             parsed,
-            vec![SchedulerKind::Fp, SchedulerKind::Edf, SchedulerKind::Heft]
+            vec![
+                SchedulerKind::Fp,
+                SchedulerKind::Edf,
+                SchedulerKind::Llf,
+                SchedulerKind::Heft
+            ]
         );
     }
 
