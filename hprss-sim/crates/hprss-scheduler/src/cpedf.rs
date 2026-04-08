@@ -135,12 +135,12 @@ impl CpEdfScheduler {
         absolute_deadline: u64,
         release_time: u64,
         remaining_work_ns: u64,
-    ) -> (i128, u64, u32, u64, u64) {
+    ) -> (u64, u32, i128, u64, u64) {
         let slack = i128::from(absolute_deadline) - i128::from(now) - i128::from(remaining_work_ns);
         (
-            slack,
             absolute_deadline,
             self.stage_key(job_id),
+            slack,
             release_time,
             job_id.0,
         )
@@ -549,5 +549,86 @@ mod tests {
                 device_id: DeviceId(1)
             }]
         ));
+    }
+
+    #[test]
+    fn cpedf_prefers_earlier_deadline_over_lower_slack() {
+        let mut sched = CpEdfScheduler::default();
+        let device = cpu_device();
+        let running = Job {
+            id: JobId(20),
+            task_id: TaskId(20),
+            state: JobState::Ready,
+            version: 0,
+            release_time: 0,
+            absolute_deadline: 25_000,
+            actual_exec_ns: Some(18_000),
+            dag_provenance: Some(DagProvenance {
+                dag_instance_id: DagInstanceId(0),
+                node: SubTaskIdx(0),
+            }),
+            executed_ns: 0,
+            assigned_device: None,
+            exec_start_time: None,
+            effective_priority: 1,
+        };
+        let incoming = Job {
+            id: JobId(21),
+            task_id: TaskId(21),
+            state: JobState::Ready,
+            version: 0,
+            release_time: 0,
+            absolute_deadline: 20_000,
+            actual_exec_ns: Some(1_000),
+            dag_provenance: Some(DagProvenance {
+                dag_instance_id: DagInstanceId(0),
+                node: SubTaskIdx(1),
+            }),
+            executed_ns: 0,
+            assigned_device: None,
+            exec_start_time: None,
+            effective_priority: 1,
+        };
+        let task = task_cpu(21);
+
+        let idle_view = SchedulerView {
+            now: 0,
+            devices: std::slice::from_ref(&device),
+            running_jobs: &[(DeviceId(0), None)],
+            ready_queues: &[(DeviceId(0), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let _ = sched.on_job_arrival(&running, &task_cpu(20), &idle_view);
+
+        let busy_view = SchedulerView {
+            now: 1_000,
+            devices: std::slice::from_ref(&device),
+            running_jobs: &[(
+                DeviceId(0),
+                Some(RunningJobInfo {
+                    job_id: running.id,
+                    task_id: running.task_id,
+                    priority: 1,
+                    release_time: running.release_time,
+                    absolute_deadline: running.absolute_deadline,
+                    criticality: CriticalityLevel::Lo,
+                    elapsed_ns: 0,
+                }),
+            )],
+            ready_queues: &[(DeviceId(0), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let actions = sched.on_job_arrival(&incoming, &task, &busy_view);
+        assert!(
+            matches!(
+                actions.as_slice(),
+                [Action::Preempt {
+                    victim: JobId(20),
+                    by: JobId(21),
+                    device_id: DeviceId(0)
+                }]
+            ),
+            "earlier absolute deadline must dominate CP slack ranking"
+        );
     }
 }

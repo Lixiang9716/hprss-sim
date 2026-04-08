@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hprss_types::{
-    Action, CriticalityLevel, DagInstanceId, DeviceId, Job, Scheduler, SchedulerView,
+    Action, CriticalityLevel, DagInstanceId, DeviceId, Job, JobId, Scheduler, SchedulerView,
     device::{DeviceConfig, PreemptionModel},
     task::{DeviceType, Task},
 };
@@ -11,9 +11,31 @@ use hprss_types::{
 #[derive(Debug, Default)]
 pub struct FederatedScheduler {
     dedicated_devices: HashMap<(DagInstanceId, DeviceType), DeviceId>,
+    active_job_pins: HashMap<JobId, (DagInstanceId, DeviceType)>,
 }
 
 impl FederatedScheduler {
+    fn reclaim_stale_pins(&mut self, view: &SchedulerView<'_>) {
+        let mut visible_jobs = HashSet::new();
+        for (_, running) in view.running_jobs {
+            if let Some(running) = running {
+                visible_jobs.insert(running.job_id);
+            }
+        }
+        for (_, queue) in view.ready_queues {
+            for job in queue {
+                visible_jobs.insert(job.job_id);
+            }
+        }
+
+        self.active_job_pins
+            .retain(|job_id, _| visible_jobs.contains(job_id));
+        let active_keys: HashSet<(DagInstanceId, DeviceType)> =
+            self.active_job_pins.values().copied().collect();
+        self.dedicated_devices
+            .retain(|key, _| active_keys.contains(key));
+    }
+
     fn compatible_devices<'a>(task: &Task, view: &'a SchedulerView<'_>) -> Vec<&'a DeviceConfig> {
         task.affinity
             .iter()
@@ -117,9 +139,20 @@ impl Scheduler for FederatedScheduler {
     }
 
     fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action> {
+        self.reclaim_stale_pins(view);
         let Some(device_id) = self.select_target_device(job, task, view) else {
             return vec![Action::NoOp];
         };
+        if let Some(prov) = job.dag_provenance
+            && let Some(device_type) = view
+                .devices
+                .iter()
+                .find(|d| d.id == device_id)
+                .map(|d| d.device_type)
+        {
+            self.active_job_pins
+                .insert(job.id, (prov.dag_instance_id, device_type));
+        }
         let running = view
             .running_jobs
             .iter()
@@ -151,10 +184,12 @@ impl Scheduler for FederatedScheduler {
 
     fn on_job_complete(
         &mut self,
-        _job: &Job,
+        job: &Job,
         device_id: DeviceId,
         view: &SchedulerView<'_>,
     ) -> Vec<Action> {
+        self.active_job_pins.remove(&job.id);
+        self.reclaim_stale_pins(view);
         match Self::next_queued_job(device_id, view) {
             Some(next) => vec![Action::Dispatch {
                 job_id: next.job_id,
@@ -170,6 +205,7 @@ impl Scheduler for FederatedScheduler {
         running_job: &Job,
         view: &SchedulerView<'_>,
     ) -> Vec<Action> {
+        self.reclaim_stale_pins(view);
         match Self::next_queued_job(device_id, view) {
             Some(waiting)
                 if waiting.absolute_deadline < running_job.absolute_deadline
@@ -191,6 +227,7 @@ impl Scheduler for FederatedScheduler {
         _trigger_job: &Job,
         view: &SchedulerView<'_>,
     ) -> Vec<Action> {
+        self.reclaim_stale_pins(view);
         if new_level == CriticalityLevel::Hi {
             let mut actions = Vec::new();
             for (_, queue) in view.ready_queues {
@@ -207,6 +244,7 @@ impl Scheduler for FederatedScheduler {
     }
 
     fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        self.reclaim_stale_pins(view);
         match Self::next_queued_job(device_id, view) {
             Some(next) => vec![Action::Dispatch {
                 job_id: next.job_id,
@@ -374,6 +412,89 @@ mod tests {
             [Action::Dispatch {
                 job_id: JobId(2),
                 device_id: DeviceId(1)
+            }]
+        ));
+    }
+
+    #[test]
+    fn federated_reclaims_dedicated_mapping_after_instance_finishes() {
+        let mut sched = FederatedScheduler::default();
+        let cpu0 = cpu_device(0);
+        let cpu1 = cpu_device(1);
+        let task = cpu_task(1);
+        let first = dag_job(1, 5);
+        let second = dag_job(2, 5);
+
+        let idle_view = SchedulerView {
+            now: 0,
+            devices: &[cpu0.clone(), cpu1.clone()],
+            running_jobs: &[(cpu0.id, None), (cpu1.id, None)],
+            ready_queues: &[(cpu0.id, vec![]), (cpu1.id, vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let _ = sched.on_job_arrival(&first, &task, &idle_view);
+        let _ = sched.on_job_arrival(&second, &task, &idle_view);
+        assert_eq!(sched.dedicated_devices.len(), 1);
+
+        let empty_view = SchedulerView {
+            now: 10_000,
+            devices: &[cpu0, cpu1],
+            running_jobs: &[(DeviceId(0), None), (DeviceId(1), None)],
+            ready_queues: &[(DeviceId(0), vec![]), (DeviceId(1), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let _ = sched.on_job_complete(&first, DeviceId(0), &empty_view);
+        assert!(
+            sched.dedicated_devices.is_empty(),
+            "finished DAG instance should release dedicated mapping"
+        );
+    }
+
+    #[test]
+    fn federated_non_preemptive_device_never_preempts_on_arrival() {
+        let mut sched = FederatedScheduler::default();
+        let np_cpu = DeviceConfig {
+            id: DeviceId(0),
+            name: "cpu-np".to_string(),
+            device_group: None,
+            device_type: DeviceType::Cpu,
+            cores: 1,
+            preemption: PreemptionModel::NonPreemptive {
+                reconfig_time_ns: 500,
+            },
+            context_switch_ns: 0,
+            speed_factor: 1.0,
+            multicore_policy: None,
+            power_watts: None,
+        };
+        let task = cpu_task(1);
+        let incoming = dag_job(6, 7);
+        let running = dag_job(5, 7);
+
+        let view = SchedulerView {
+            now: 2_000,
+            devices: std::slice::from_ref(&np_cpu),
+            running_jobs: &[(
+                DeviceId(0),
+                Some(RunningJobInfo {
+                    job_id: running.id,
+                    task_id: running.task_id,
+                    priority: 1,
+                    release_time: 0,
+                    absolute_deadline: running.absolute_deadline + 10_000,
+                    criticality: CriticalityLevel::Lo,
+                    elapsed_ns: 1_000,
+                }),
+            )],
+            ready_queues: &[(DeviceId(0), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let actions = sched.on_job_arrival(&incoming, &task, &view);
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Enqueue {
+                job_id: JobId(6),
+                device_id: DeviceId(0)
             }]
         ));
     }
