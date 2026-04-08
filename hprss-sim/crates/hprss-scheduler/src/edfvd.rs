@@ -21,6 +21,13 @@ impl Default for EdfVdScheduler {
 }
 
 impl EdfVdScheduler {
+    /// Create an EDF-VD scheduler with virtual-deadline factor `x = num / den`.
+    ///
+    /// `x=1` degenerates to EDF behavior for HI-critical jobs in LO mode.
+    /// `x=0` maps HI-critical virtual deadlines to release time (most aggressive).
+    ///
+    /// Constructor validation uses panics because invalid factors are programmer
+    /// configuration errors that should fail fast during setup.
     pub fn new(virtual_deadline_num: u64, virtual_deadline_den: u64) -> Self {
         assert!(
             virtual_deadline_den > 0,
@@ -567,5 +574,82 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    #[test]
+    fn x_one_behaves_like_edf_for_hi_jobs_in_lo_mode() {
+        let mut scheduler = EdfVdScheduler::new(1, 1);
+        let running = RunningJobInfo {
+            job_id: JobId(30),
+            task_id: TaskId(30),
+            priority: 1,
+            release_time: 0,
+            absolute_deadline: 40_000,
+            criticality: CriticalityLevel::Lo,
+            elapsed_ns: 1_000,
+        };
+        let view = SchedulerView {
+            now: 1_000,
+            devices: &[cpu_device()],
+            running_jobs: &[(DeviceId(0), Some(running))],
+            ready_queues: &[(DeviceId(0), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let incoming_task = task(31, CriticalityLevel::Hi, 50_000);
+        let incoming_job = job(31, 31, 0, 50_000);
+
+        let actions = scheduler.on_job_arrival(&incoming_job, &incoming_task, &view);
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Enqueue {
+                job_id: JobId(31),
+                device_id: DeviceId(0)
+            }]
+        ));
+    }
+
+    #[test]
+    fn x_zero_sets_hi_virtual_deadline_to_release_time() {
+        let mut scheduler = EdfVdScheduler::new(0, 1);
+        let running = RunningJobInfo {
+            job_id: JobId(40),
+            task_id: TaskId(40),
+            priority: 1,
+            release_time: 0,
+            absolute_deadline: 20_000,
+            criticality: CriticalityLevel::Lo,
+            elapsed_ns: 1_000,
+        };
+        let view = SchedulerView {
+            now: 5_000,
+            devices: &[cpu_device()],
+            running_jobs: &[(DeviceId(0), Some(running))],
+            ready_queues: &[(DeviceId(0), vec![])],
+            criticality_level: CriticalityLevel::Lo,
+        };
+        let incoming_task = task(41, CriticalityLevel::Hi, 60_000);
+        let incoming_job = job(41, 41, 5_000, 65_000);
+
+        let actions = scheduler.on_job_arrival(&incoming_job, &incoming_task, &view);
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::Preempt {
+                victim: JobId(40),
+                by: JobId(41),
+                device_id: DeviceId(0)
+            }]
+        ));
+    }
+
+    #[test]
+    #[should_panic(expected = "virtual deadline denominator must be > 0")]
+    fn constructor_rejects_zero_denominator() {
+        let _ = EdfVdScheduler::new(1, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "virtual deadline ratio must be in [0, 1]")]
+    fn constructor_rejects_numerator_greater_than_denominator() {
+        let _ = EdfVdScheduler::new(2, 1);
     }
 }
