@@ -3,3 +3,5 @@ target/
 .DS_Store
 thesis/
 *.pdf
+hprss-sim/perf.data
+hprss-sim/perf.data.old
