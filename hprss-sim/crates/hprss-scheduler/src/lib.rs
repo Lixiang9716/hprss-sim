@@ -3,12 +3,14 @@
 //! Built-in algorithms: Fixed Priority, EDF, LLF (heterogeneous variants).
 
 pub mod edf;
+pub mod edfvd;
 pub mod heft;
 pub mod llf;
 
 use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
 pub use edf::EdfScheduler;
+pub use edfvd::EdfVdScheduler;
 pub use heft::{HeftPlan, HeftPlanner, HeftScheduler};
 pub use llf::LlfScheduler;
 
@@ -181,6 +183,12 @@ mod tests {
     }
 
     #[test]
+    fn edfvd_scheduler_name() {
+        let sched = crate::edfvd::EdfVdScheduler::default();
+        assert_eq!(sched.name(), "EDF-VD-Het");
+    }
+
+    #[test]
     fn fp_edf_heft_keep_reevaluation_disabled_by_default() {
         assert_eq!(
             FixedPriorityScheduler.reevaluation_policy(),
@@ -188,6 +196,10 @@ mod tests {
         );
         assert_eq!(
             crate::edf::EdfScheduler.reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::edfvd::EdfVdScheduler::default().reevaluation_policy(),
             ReevaluationPolicy::Disabled
         );
         assert_eq!(
