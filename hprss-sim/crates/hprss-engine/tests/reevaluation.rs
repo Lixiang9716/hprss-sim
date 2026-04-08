@@ -1,7 +1,7 @@
 use hprss_engine::engine::{SimConfig, SimEngine};
 use hprss_types::{
-    Action, CriticalityLevel, DeviceId, Job, Nanos, ReevaluationPolicy, ReevaluationTrigger,
-    Scheduler, SchedulerView, TaskId,
+    Action, CriticalityLevel, DeviceId, EventKind, Job, Nanos, ReevaluationPolicy,
+    ReevaluationTrigger, Scheduler, SchedulerView, TaskId,
     device::{DeviceConfig, PreemptionModel},
     task::{ArrivalModel, DeviceType, ExecutionTimeModel, Task},
 };
@@ -22,16 +22,23 @@ fn cpu_device(id: u32) -> DeviceConfig {
 }
 
 struct ReevaluatingScheduler {
-    reevaluation_count: u32,
-    interval_ns: Nanos,
+    policy: ReevaluationPolicy,
+    preempt_on_reevaluation: bool,
+    reevaluation_log: Vec<(ReevaluationTrigger, Nanos)>,
 }
 
 impl ReevaluatingScheduler {
-    fn new(interval_ns: Nanos) -> Self {
+    fn new(policy: ReevaluationPolicy) -> Self {
         Self {
-            reevaluation_count: 0,
-            interval_ns,
+            policy,
+            preempt_on_reevaluation: true,
+            reevaluation_log: Vec::new(),
         }
+    }
+
+    fn with_preemption(mut self, enabled: bool) -> Self {
+        self.preempt_on_reevaluation = enabled;
+        self
     }
 }
 
@@ -41,9 +48,7 @@ impl Scheduler for ReevaluatingScheduler {
     }
 
     fn reevaluation_policy(&self) -> ReevaluationPolicy {
-        ReevaluationPolicy::Periodic {
-            interval_ns: self.interval_ns,
-        }
+        self.policy
     }
 
     fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action> {
@@ -114,10 +119,13 @@ impl Scheduler for ReevaluatingScheduler {
 
     fn on_reevaluation(
         &mut self,
-        _trigger: ReevaluationTrigger,
+        trigger: ReevaluationTrigger,
         view: &SchedulerView<'_>,
     ) -> Vec<Action> {
-        self.reevaluation_count += 1;
+        self.reevaluation_log.push((trigger, view.now));
+        if !self.preempt_on_reevaluation {
+            return vec![Action::NoOp];
+        }
 
         let Some((device_id, running)) = view
             .running_jobs
@@ -172,11 +180,12 @@ fn reevaluation_callback_is_triggered() {
     }]);
     engine.schedule_initial_arrivals();
 
-    let mut scheduler = ReevaluatingScheduler::new(5_000);
+    let mut scheduler =
+        ReevaluatingScheduler::new(ReevaluationPolicy::Periodic { interval_ns: 5_000 });
     engine.run(&mut scheduler);
 
     assert!(
-        scheduler.reevaluation_count > 0,
+        !scheduler.reevaluation_log.is_empty(),
         "periodic reevaluation callback should be invoked"
     );
 }
@@ -225,9 +234,161 @@ fn reevaluation_actions_are_executed() {
     ]);
     engine.schedule_initial_arrivals();
 
-    let mut scheduler = ReevaluatingScheduler::new(5_000);
+    let mut scheduler =
+        ReevaluatingScheduler::new(ReevaluationPolicy::Periodic { interval_ns: 5_000 });
     engine.run(&mut scheduler);
 
     assert!(engine.summary().preemption_count > 0);
     assert_eq!(engine.metrics().completed_jobs, 2);
+}
+
+#[test]
+fn triggered_policy_debounces_burst_events() {
+    let mut engine = SimEngine::new(
+        SimConfig {
+            duration_ns: 80_000,
+            seed: 77,
+        },
+        vec![cpu_device(0)],
+        vec![],
+        vec![],
+    );
+
+    engine.register_tasks(vec![
+        Task {
+            id: TaskId(0),
+            name: "burst-a".to_string(),
+            priority: 1,
+            arrival: ArrivalModel::Periodic { period: 1_000_000 },
+            deadline: 1_000_000,
+            criticality: CriticalityLevel::Lo,
+            exec_times: vec![(
+                DeviceType::Cpu,
+                ExecutionTimeModel::Deterministic { wcet: 8_000 },
+            )],
+            affinity: vec![DeviceType::Cpu],
+            data_size: 0,
+        },
+        Task {
+            id: TaskId(1),
+            name: "burst-b".to_string(),
+            priority: 2,
+            arrival: ArrivalModel::Periodic { period: 1_000_000 },
+            deadline: 1_000_000,
+            criticality: CriticalityLevel::Lo,
+            exec_times: vec![(
+                DeviceType::Cpu,
+                ExecutionTimeModel::Deterministic { wcet: 8_000 },
+            )],
+            affinity: vec![DeviceType::Cpu],
+            data_size: 0,
+        },
+    ]);
+    engine.schedule_initial_arrivals();
+
+    let min_interval_ns = 10_000;
+    let mut scheduler =
+        ReevaluatingScheduler::new(ReevaluationPolicy::Triggered { min_interval_ns })
+            .with_preemption(false);
+    engine.run(&mut scheduler);
+
+    let triggered_times: Vec<Nanos> = scheduler
+        .reevaluation_log
+        .iter()
+        .filter_map(|(trigger, ts)| (*trigger != ReevaluationTrigger::Periodic).then_some(*ts))
+        .collect();
+
+    assert!(!triggered_times.is_empty());
+    assert_eq!(triggered_times[0], min_interval_ns);
+    assert!(
+        triggered_times
+            .windows(2)
+            .all(|w| w[1].saturating_sub(w[0]) >= min_interval_ns),
+        "triggered reevaluation callbacks must respect debounce interval"
+    );
+}
+
+#[test]
+fn hybrid_policy_periodic_cadence_is_stable_with_triggered_callbacks() {
+    let mut engine = SimEngine::new(
+        SimConfig {
+            duration_ns: 35_000,
+            seed: 88,
+        },
+        vec![cpu_device(0)],
+        vec![],
+        vec![],
+    );
+
+    engine.register_tasks(vec![Task {
+        id: TaskId(0),
+        name: "hybrid".to_string(),
+        priority: 1,
+        arrival: ArrivalModel::Periodic { period: 1_000_000 },
+        deadline: 1_000_000,
+        criticality: CriticalityLevel::Lo,
+        exec_times: vec![(
+            DeviceType::Cpu,
+            ExecutionTimeModel::Deterministic { wcet: 100_000 },
+        )],
+        affinity: vec![DeviceType::Cpu],
+        data_size: 0,
+    }]);
+    engine.schedule_initial_arrivals();
+
+    let mut scheduler = ReevaluatingScheduler::new(ReevaluationPolicy::Hybrid {
+        interval_ns: 10_000,
+        min_interval_ns: 3_000,
+    })
+    .with_preemption(false);
+    engine.run(&mut scheduler);
+
+    let periodic_times: Vec<Nanos> = scheduler
+        .reevaluation_log
+        .iter()
+        .filter_map(|(trigger, ts)| (*trigger == ReevaluationTrigger::Periodic).then_some(*ts))
+        .collect();
+    let triggered_times: Vec<Nanos> = scheduler
+        .reevaluation_log
+        .iter()
+        .filter_map(|(trigger, ts)| (*trigger != ReevaluationTrigger::Periodic).then_some(*ts))
+        .collect();
+
+    assert_eq!(periodic_times, vec![10_000, 20_000, 30_000]);
+    assert_eq!(triggered_times, vec![3_000]);
+}
+
+#[test]
+fn stale_reevaluation_event_is_ignored() {
+    let mut engine = SimEngine::new(
+        SimConfig {
+            duration_ns: 25_000,
+            seed: 99,
+        },
+        vec![cpu_device(0)],
+        vec![],
+        vec![],
+    );
+
+    let mut scheduler = ReevaluatingScheduler::new(ReevaluationPolicy::Periodic {
+        interval_ns: 10_000,
+    })
+    .with_preemption(false);
+
+    engine.schedule_event(
+        5_000,
+        EventKind::SchedulerReevaluation {
+            generation: 999,
+            trigger: ReevaluationTrigger::Periodic,
+        },
+    );
+
+    engine.run(&mut scheduler);
+
+    let times: Vec<Nanos> = scheduler
+        .reevaluation_log
+        .iter()
+        .map(|(_, ts)| *ts)
+        .collect();
+    assert_eq!(times, vec![10_000, 20_000]);
 }

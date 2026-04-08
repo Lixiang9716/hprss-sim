@@ -64,10 +64,16 @@ pub struct SimEngine {
     preemption_count: u64,
     /// Number of migrations performed by the engine.
     migration_count: u64,
-    /// Last scheduled reevaluation event, tracked for deduplication/invalidation.
-    pending_reevaluation: Option<(u64, Nanos)>,
-    /// Monotonic generation for reevaluation events.
-    reevaluation_generation: u64,
+    /// Last scheduled triggered reevaluation event, tracked for debounce/invalidation.
+    pending_triggered_reevaluation: Option<(u64, Nanos)>,
+    /// Last scheduled periodic reevaluation event.
+    pending_periodic_reevaluation: Option<(u64, Nanos)>,
+    /// Next periodic reevaluation tick timestamp.
+    next_periodic_at: Option<Nanos>,
+    /// Monotonic generation for triggered reevaluation events.
+    triggered_reevaluation_generation: u64,
+    /// Monotonic generation for periodic reevaluation events.
+    periodic_reevaluation_generation: u64,
 }
 
 impl SimEngine {
@@ -96,8 +102,11 @@ impl SimEngine {
             events_processed: 0,
             preemption_count: 0,
             migration_count: 0,
-            pending_reevaluation: None,
-            reevaluation_generation: 0,
+            pending_triggered_reevaluation: None,
+            pending_periodic_reevaluation: None,
+            next_periodic_at: None,
+            triggered_reevaluation_generation: 0,
+            periodic_reevaluation_generation: 0,
         }
     }
 
@@ -186,7 +195,7 @@ impl SimEngine {
     pub fn run(&mut self, scheduler: &mut dyn Scheduler) {
         // Schedule simulation end
         self.schedule_event(self.config.duration_ns, EventKind::SimulationEnd);
-        self.schedule_next_periodic_reevaluation(scheduler);
+        self.initialize_periodic_reevaluation(scheduler);
 
         tracing::info!(
             "Simulation starting: duration={}ns, seed={}",
@@ -589,10 +598,24 @@ impl SimEngine {
         trigger: ReevaluationTrigger,
         scheduler: &mut dyn Scheduler,
     ) {
-        if self.pending_reevaluation != Some((generation, self.now)) {
-            return;
+        match trigger {
+            ReevaluationTrigger::Periodic => {
+                if self.pending_periodic_reevaluation != Some((generation, self.now)) {
+                    return;
+                }
+                self.pending_periodic_reevaluation = None;
+            }
+            ReevaluationTrigger::TaskArrival
+            | ReevaluationTrigger::JobComplete
+            | ReevaluationTrigger::PreemptionPoint
+            | ReevaluationTrigger::TransferComplete
+            | ReevaluationTrigger::CriticalityChange => {
+                if self.pending_triggered_reevaluation != Some((generation, self.now)) {
+                    return;
+                }
+                self.pending_triggered_reevaluation = None;
+            }
         }
-        self.pending_reevaluation = None;
 
         let actions = {
             self.device_mgr
@@ -603,7 +626,9 @@ impl SimEngine {
             scheduler.on_reevaluation(trigger, &view)
         };
         self.execute_actions(actions, false);
-        self.schedule_next_periodic_reevaluation(scheduler);
+        if trigger == ReevaluationTrigger::Periodic {
+            self.schedule_next_periodic_reevaluation(scheduler);
+        }
     }
 
     fn execute_actions(&mut self, actions: Vec<Action>, at_preemption_point: bool) {
@@ -977,37 +1002,67 @@ impl SimEngine {
         let Some(min_interval_ns) = scheduler.reevaluation_policy().triggered_min_interval() else {
             return;
         };
-        self.schedule_reevaluation_event(self.now.saturating_add(min_interval_ns.max(1)), trigger);
-    }
-
-    fn schedule_next_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
-        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
-            return;
-        };
-        self.schedule_reevaluation_event(
-            self.now.saturating_add(interval_ns.max(1)),
-            ReevaluationTrigger::Periodic,
-        );
-    }
-
-    fn schedule_reevaluation_event(&mut self, time: Nanos, trigger: ReevaluationTrigger) {
+        let time = self.now.saturating_add(min_interval_ns.max(1));
         if time > self.config.duration_ns {
             return;
         }
-        if let Some((_, pending_time)) = self.pending_reevaluation
+        if let Some((_, pending_time)) = self.pending_triggered_reevaluation
             && pending_time <= time
         {
             return;
         }
 
-        self.reevaluation_generation = self.reevaluation_generation.saturating_add(1);
-        let generation = self.reevaluation_generation;
-        self.pending_reevaluation = Some((generation, time));
+        self.triggered_reevaluation_generation =
+            self.triggered_reevaluation_generation.saturating_add(1);
+        let generation = self.triggered_reevaluation_generation;
+        self.pending_triggered_reevaluation = Some((generation, time));
         self.schedule_event(
             time,
             EventKind::SchedulerReevaluation {
                 generation,
                 trigger,
+            },
+        );
+    }
+
+    fn initialize_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
+        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
+            self.next_periodic_at = None;
+            self.pending_periodic_reevaluation = None;
+            return;
+        };
+        let first_tick = interval_ns.max(1);
+        self.next_periodic_at = Some(first_tick);
+        self.schedule_periodic_reevaluation_event(first_tick);
+    }
+
+    fn schedule_next_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
+        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
+            self.next_periodic_at = None;
+            self.pending_periodic_reevaluation = None;
+            return;
+        };
+        let Some(current_tick) = self.next_periodic_at else {
+            return;
+        };
+        let next_tick = current_tick.saturating_add(interval_ns.max(1));
+        self.next_periodic_at = Some(next_tick);
+        self.schedule_periodic_reevaluation_event(next_tick);
+    }
+
+    fn schedule_periodic_reevaluation_event(&mut self, time: Nanos) {
+        if time > self.config.duration_ns {
+            return;
+        }
+        self.periodic_reevaluation_generation =
+            self.periodic_reevaluation_generation.saturating_add(1);
+        let generation = self.periodic_reevaluation_generation;
+        self.pending_periodic_reevaluation = Some((generation, time));
+        self.schedule_event(
+            time,
+            EventKind::SchedulerReevaluation {
+                generation,
+                trigger: ReevaluationTrigger::Periodic,
             },
         );
     }

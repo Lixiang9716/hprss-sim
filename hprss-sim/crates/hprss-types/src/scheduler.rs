@@ -108,6 +108,12 @@ pub enum ReevaluationPolicy {
     /// Event-triggered reevaluation with debounce interval.
     Triggered { min_interval_ns: Nanos },
     /// Support both periodic and event-triggered reevaluation.
+    ///
+    /// Semantics:
+    /// - periodic ticks are fixed-cadence (`interval_ns`, `2*interval_ns`, ... from t=0)
+    /// - periodic ticks are NOT reset by triggered callbacks
+    /// - triggered callbacks are debounced independently by `min_interval_ns`
+    /// - periodic and triggered reevaluations can both fire in one simulation run
     Hybrid {
         interval_ns: Nanos,
         min_interval_ns: Nanos,
@@ -115,6 +121,9 @@ pub enum ReevaluationPolicy {
 }
 
 impl ReevaluationPolicy {
+    /// Returns periodic tick interval if this policy has periodic reevaluation enabled.
+    ///
+    /// Interval values of 0 are treated as disabled for safety.
     pub fn periodic_interval(self) -> Option<Nanos> {
         match self {
             Self::Periodic { interval_ns } | Self::Hybrid { interval_ns, .. }
@@ -126,6 +135,9 @@ impl ReevaluationPolicy {
         }
     }
 
+    /// Returns triggered debounce interval if this policy has triggered reevaluation enabled.
+    ///
+    /// Interval values of 0 are treated as disabled for safety.
     pub fn triggered_min_interval(self) -> Option<Nanos> {
         match self {
             Self::Triggered { min_interval_ns }
