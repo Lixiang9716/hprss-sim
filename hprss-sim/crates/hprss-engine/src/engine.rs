@@ -864,6 +864,30 @@ impl SimEngine {
     pub fn metrics(&self) -> &MetricsCollector {
         &self.metrics
     }
+
+    /// Produce a summary of simulation results.
+    pub fn summary(&self) -> SimResult {
+        let m = &self.metrics;
+        SimResult {
+            total_jobs: m.total_jobs,
+            completed_jobs: m.completed_jobs,
+            deadline_misses: m.deadline_misses,
+            miss_ratio: m.miss_ratio(),
+            schedulable: m.is_schedulable(),
+            events_processed: self.events_processed,
+        }
+    }
+}
+
+/// Aggregated result of a single simulation run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SimResult {
+    pub total_jobs: u64,
+    pub completed_jobs: u64,
+    pub deadline_misses: u64,
+    pub miss_ratio: f64,
+    pub schedulable: bool,
+    pub events_processed: u64,
 }
 
 fn sample_exec_time(task: &Task, level: CriticalityLevel, rng: &mut ChaCha8Rng) -> Nanos {

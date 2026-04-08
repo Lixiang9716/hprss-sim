@@ -443,6 +443,7 @@ dependencies = [
  "hprss-workload",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
+ "serde",
  "slab",
  "thiserror",
  "tracing",
@@ -490,6 +491,7 @@ dependencies = [
  "hprss-scheduler",
  "hprss-workload",
  "rayon",
+ "serde",
  "tracing",
  "tracing-subscriber",
 ]

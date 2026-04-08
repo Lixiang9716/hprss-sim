@@ -1,35 +1,116 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Context;
-use clap::Parser;
-use hprss_engine::engine::{SimConfig, SimEngine};
+use clap::{Parser, Subcommand};
+use hprss_engine::engine::{SimConfig, SimEngine, SimResult};
 use hprss_platform::PlatformConfig;
 use hprss_scheduler::FixedPriorityScheduler;
 use hprss_workload::{WorkloadConfig, generate_taskset};
+use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
-#[command(name = "hprss-sim", about = "Run HPRSS heterogeneous DES simulation")]
-struct Args {
+#[command(name = "hprss-sim", about = "HPRSS heterogeneous DES simulator")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    // ── Flat args for backward-compatible `hprss-sim --platform ...` usage ──
     /// Platform TOML config path
-    #[arg(long)]
-    platform: PathBuf,
+    #[arg(long, global = true)]
+    platform: Option<PathBuf>,
 
     /// Number of tasks to generate
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 10, global = true)]
     tasks: usize,
 
     /// Target total utilization
-    #[arg(long, default_value_t = 0.6)]
+    #[arg(long, default_value_t = 0.6, global = true)]
     utilization: f64,
 
     /// Override random seed from platform config
-    #[arg(long)]
+    #[arg(long, global = true)]
     seed: Option<u64>,
 
     /// Enable verbose trace logs
-    #[arg(long, default_value_t = false)]
+    #[arg(long, default_value_t = false, global = true)]
     verbose: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run a single simulation (default when no subcommand given)
+    Run,
+    /// Sweep a parameter space in parallel and write results to CSV
+    Sweep(SweepArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct SweepArgs {
+    /// Utilization range: start:step:end (e.g. 0.5:0.1:0.9)
+    #[arg(long, default_value = "0.5:0.1:0.9")]
+    utilizations: String,
+
+    /// Comma-separated task counts (e.g. 10,50,100,250)
+    #[arg(long, default_value = "10,50,100")]
+    task_counts: String,
+
+    /// Seed range: start:end (inclusive, e.g. 1:10)
+    #[arg(long, default_value = "1:5")]
+    seeds: String,
+
+    /// Output CSV path
+    #[arg(long, short, default_value = "sweep_results.csv")]
+    output: PathBuf,
+
+    /// Number of Rayon threads (0 = all available cores)
+    #[arg(long, default_value_t = 0)]
+    jobs: usize,
+}
+
+/// Parse "start:step:end" into a Vec<f64>.
+fn parse_range_f64(s: &str) -> Result<Vec<f64>, String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        3 => {
+            let start: f64 = parts[0].parse().map_err(|e| format!("{e}"))?;
+            let step: f64 = parts[1].parse().map_err(|e| format!("{e}"))?;
+            let end: f64 = parts[2].parse().map_err(|e| format!("{e}"))?;
+            if step <= 0.0 {
+                return Err("step must be positive".into());
+            }
+            let mut vals = Vec::new();
+            let mut v = start;
+            while v <= end + f64::EPSILON {
+                vals.push((v * 1000.0).round() / 1000.0);
+                v += step;
+            }
+            Ok(vals)
+        }
+        1 => {
+            let v: f64 = parts[0].parse().map_err(|e| format!("{e}"))?;
+            Ok(vec![v])
+        }
+        _ => Err("expected format: start:step:end or single value".into()),
+    }
+}
+
+/// Parse "start:end" into a Vec<u64>.
+fn parse_range_u64(s: &str) -> Result<Vec<u64>, String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        2 => {
+            let start: u64 = parts[0].parse().map_err(|e| format!("{e}"))?;
+            let end: u64 = parts[1].parse().map_err(|e| format!("{e}"))?;
+            Ok((start..=end).collect())
+        }
+        1 => {
+            let v: u64 = parts[0].parse().map_err(|e| format!("{e}"))?;
+            Ok(vec![v])
+        }
+        _ => Err("expected format: start:end or single value".into()),
+    }
 }
 
 fn init_tracing(verbose: bool) {
@@ -39,30 +120,36 @@ fn init_tracing(verbose: bool) {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
-    init_tracing(args.verbose);
+/// One row in the sweep CSV output.
+#[derive(Debug, serde::Serialize)]
+struct SweepRow {
+    utilization: f64,
+    task_count: usize,
+    seed: u64,
+    algorithm: String,
+    total_jobs: u64,
+    completed_jobs: u64,
+    deadline_misses: u64,
+    miss_ratio: f64,
+    schedulable: bool,
+    events_processed: u64,
+    wall_time_us: u64,
+}
 
-    let platform = PlatformConfig::load(&args.platform).with_context(|| {
-        format!(
-            "failed to load platform config: {}",
-            args.platform.display()
-        )
-    })?;
-    let devices = platform
-        .build_devices()
-        .context("failed to build devices")?;
-    let interconnects = platform
-        .build_interconnects(&devices)
-        .context("failed to build interconnects")?;
-    let buses = platform
-        .build_buses()
-        .context("failed to build shared buses")?;
+/// Run a single simulation and return the result with timing.
+fn run_single(
+    platform: &PlatformConfig,
+    num_tasks: usize,
+    utilization: f64,
+    seed: u64,
+) -> anyhow::Result<(SimResult, u64)> {
+    let devices = platform.build_devices()?;
+    let interconnects = platform.build_interconnects(&devices)?;
+    let buses = platform.build_buses()?;
 
-    let seed = args.seed.unwrap_or(platform.simulation.seed);
     let workload_cfg = WorkloadConfig {
-        num_tasks: args.tasks,
-        total_utilization: args.utilization,
+        num_tasks,
+        total_utilization: utilization,
         seed,
         ..WorkloadConfig::default()
     };
@@ -81,22 +168,157 @@ fn run() -> anyhow::Result<()> {
     engine.schedule_initial_arrivals();
 
     let mut scheduler = FixedPriorityScheduler;
+    let t0 = Instant::now();
     engine.run(&mut scheduler);
+    let wall_us = t0.elapsed().as_micros() as u64;
 
-    let metrics = engine.metrics();
+    Ok((engine.summary(), wall_us))
+}
+
+fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
+    let platform_path = cli.platform.as_ref().context("--platform is required")?;
+    let platform = PlatformConfig::load(platform_path).with_context(|| {
+        format!(
+            "failed to load platform config: {}",
+            platform_path.display()
+        )
+    })?;
+
+    let seed = cli.seed.unwrap_or(platform.simulation.seed);
+    let (result, wall_us) = run_single(&platform, cli.tasks, cli.utilization, seed)?;
+
     println!("HPRSS Simulation Summary");
-    println!("total_jobs      : {}", metrics.total_jobs);
-    println!("completed_jobs  : {}", metrics.completed_jobs);
-    println!("deadline_misses : {}", metrics.deadline_misses);
-    println!("miss_ratio      : {:.6}", metrics.miss_ratio());
-    println!("schedulable     : {}", metrics.is_schedulable());
-    println!("events_processed: {}", engine.events_processed());
+    println!("total_jobs      : {}", result.total_jobs);
+    println!("completed_jobs  : {}", result.completed_jobs);
+    println!("deadline_misses : {}", result.deadline_misses);
+    println!("miss_ratio      : {:.6}", result.miss_ratio);
+    println!("schedulable     : {}", result.schedulable);
+    println!("events_processed: {}", result.events_processed);
+    println!("wall_time_us    : {wall_us}");
+
+    Ok(())
+}
+
+fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
+    let platform_path = cli.platform.as_ref().context("--platform is required")?;
+    let platform = PlatformConfig::load(platform_path).with_context(|| {
+        format!(
+            "failed to load platform config: {}",
+            platform_path.display()
+        )
+    })?;
+
+    let utilizations = parse_range_f64(&sweep.utilizations)
+        .map_err(|e| anyhow::anyhow!("bad --utilizations: {e}"))?;
+    let task_counts: Vec<usize> = sweep
+        .task_counts
+        .split(',')
+        .map(|s| s.trim().parse::<usize>())
+        .collect::<Result<_, _>>()
+        .map_err(|e| anyhow::anyhow!("bad --task-counts: {e}"))?;
+    let seeds = parse_range_u64(&sweep.seeds).map_err(|e| anyhow::anyhow!("bad --seeds: {e}"))?;
+
+    // Build cartesian product of (utilization, task_count, seed)
+    let mut configs: Vec<(f64, usize, u64)> = Vec::new();
+    for &u in &utilizations {
+        for &t in &task_counts {
+            for &s in &seeds {
+                configs.push((u, t, s));
+            }
+        }
+    }
+
+    let total = configs.len();
+    eprintln!(
+        "Sweep: {} experiments ({} utilizations × {} task counts × {} seeds)",
+        total,
+        utilizations.len(),
+        task_counts.len(),
+        seeds.len(),
+    );
+
+    // Configure Rayon thread pool
+    if sweep.jobs > 0 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(sweep.jobs)
+            .build_global()
+            .ok();
+    }
+
+    let sweep_start = Instant::now();
+    let completed = std::sync::atomic::AtomicUsize::new(0);
+
+    let rows: Vec<SweepRow> = configs
+        .par_iter()
+        .filter_map(|&(utilization, task_count, seed)| {
+            let result = run_single(&platform, task_count, utilization, seed);
+            let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if done.is_multiple_of(10) || done == total {
+                eprint!("\r  [{done}/{total}]");
+            }
+            match result {
+                Ok((sim, wall_us)) => Some(SweepRow {
+                    utilization,
+                    task_count,
+                    seed,
+                    algorithm: "FP-Het".into(),
+                    total_jobs: sim.total_jobs,
+                    completed_jobs: sim.completed_jobs,
+                    deadline_misses: sim.deadline_misses,
+                    miss_ratio: sim.miss_ratio,
+                    schedulable: sim.schedulable,
+                    events_processed: sim.events_processed,
+                    wall_time_us: wall_us,
+                }),
+                Err(e) => {
+                    eprintln!(
+                        "\nWARN: u={utilization} tasks={task_count} seed={seed} failed: {e:#}"
+                    );
+                    None
+                }
+            }
+        })
+        .collect();
+
+    eprintln!();
+    let sweep_elapsed = sweep_start.elapsed();
+
+    // Write CSV
+    let mut wtr = csv::Writer::from_path(&sweep.output)
+        .with_context(|| format!("failed to open {}", sweep.output.display()))?;
+    for row in &rows {
+        wtr.serialize(row)?;
+    }
+    wtr.flush()?;
+
+    // Summary stats
+    let schedulable_count = rows.iter().filter(|r| r.schedulable).count();
+    let avg_miss: f64 = if rows.is_empty() {
+        0.0
+    } else {
+        rows.iter().map(|r| r.miss_ratio).sum::<f64>() / rows.len() as f64
+    };
+
+    println!("Sweep complete");
+    println!("  experiments : {}", rows.len());
+    println!("  schedulable : {schedulable_count}/{}", rows.len());
+    println!("  avg miss ratio: {avg_miss:.6}");
+    println!("  wall time   : {:.2}s", sweep_elapsed.as_secs_f64());
+    println!("  output      : {}", sweep.output.display());
 
     Ok(())
 }
 
 fn main() {
-    if let Err(err) = run() {
+    let cli = Cli::parse();
+    init_tracing(cli.verbose);
+
+    let result = match &cli.command {
+        Some(Command::Sweep(sweep)) => cmd_sweep(&cli, sweep),
+        Some(Command::Run) | None => cmd_run(&cli),
+    };
+
+    if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);
     }
