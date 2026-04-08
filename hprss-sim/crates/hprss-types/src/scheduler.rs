@@ -151,13 +151,20 @@ impl ReevaluationPolicy {
 
 /// The core scheduler interface.
 ///
-/// Implementations must be deterministic given the same SchedulerView.
+/// Determinism contract:
+/// - Given the same callback sequence and `SchedulerView` snapshots, implementations must
+///   return the same ordered `Action` list.
+/// - `Action` ordering is significant; the engine executes returned actions in-order.
+///
 /// This trait is shared between simulator and future real-time hardware.
 pub trait Scheduler: Send {
     /// Human-readable name of this scheduling algorithm
     fn name(&self) -> &str;
 
-    /// A new job has been released (periodic timer / sporadic event / DAG predecessor done)
+    /// A new job has become ready to run.
+    ///
+    /// This callback is used for both periodic/sporadic releases and replay/transfer-triggered
+    /// re-entry into scheduling.
     fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action>;
 
     /// A job completed execution on a device
@@ -168,7 +175,9 @@ pub trait Scheduler: Send {
         view: &SchedulerView<'_>,
     ) -> Vec<Action>;
 
-    /// A preemption checkpoint was reached (GPU kernel boundary / DSP DMA end)
+    /// A preemption checkpoint was reached (GPU kernel boundary / DSP DMA end).
+    ///
+    /// Called only when the referenced job is still running on `device_id`.
     fn on_preemption_point(
         &mut self,
         device_id: DeviceId,
@@ -188,6 +197,8 @@ pub trait Scheduler: Send {
     ///
     /// Used for deterministic redispatch after events such as mixed-criticality
     /// mode switches where jobs may be dropped from running state.
+    ///
+    /// The engine only invokes this when the target device has at least one ready job.
     fn on_device_idle(&mut self, _device_id: DeviceId, _view: &SchedulerView<'_>) -> Vec<Action> {
         vec![Action::NoOp]
     }

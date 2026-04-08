@@ -39,7 +39,10 @@ fn limited_preemptive_requires_boundary_and_sets_granularity_point() {
     let blocked = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: false,
     });
-    assert_eq!(blocked.decision, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(
+        blocked.decision,
+        PreemptionDecision::DeferUntilPreemptionPoint
+    );
     assert_eq!(blocked.penalty_ns, 0);
 
     let allowed = model.evaluate_preemption(PreemptionCheckInput {
@@ -67,7 +70,10 @@ fn interrupt_level_requires_boundary_and_uses_dma_window() {
     let decision = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: false,
     });
-    assert_eq!(decision.decision, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(
+        decision.decision,
+        PreemptionDecision::DeferUntilPreemptionPoint
+    );
     assert_eq!(decision.penalty_ns, 0);
 
     let allowed = model.evaluate_preemption(PreemptionCheckInput {

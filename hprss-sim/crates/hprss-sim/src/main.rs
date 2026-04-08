@@ -4,19 +4,18 @@ use std::process::Command as ProcessCommand;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use hprss_engine::engine::{SimConfig, SimEngine, SimResult};
 use hprss_platform::PlatformConfig;
-use hprss_scheduler::{
-    CpEdfScheduler, EdfScheduler, EdfVdScheduler, FederatedScheduler, FixedPriorityScheduler,
-    HeftScheduler, LlfScheduler,
-};
-use hprss_types::{EventKind, Scheduler, TaskId};
+use hprss_types::{EventKind, TaskId};
 use hprss_workload::{
     ReplayWorkload, WorkloadConfig, generate_taskset, load_replay_csv, load_replay_json,
 };
 use rayon::prelude::*;
+use scheduler_catalog::{SchedulerKind, build_scheduler, parse_scheduler_list, scheduler_label};
 use tracing_subscriber::EnvFilter;
+
+mod scheduler_catalog;
 
 #[derive(Debug, Parser)]
 #[command(name = "hprss-sim", about = "HPRSS heterogeneous DES simulator")]
@@ -115,17 +114,6 @@ struct SweepArgs {
     schedulers: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SchedulerKind {
-    Fp,
-    Edf,
-    Edfvd,
-    Llf,
-    Heft,
-    Cpedf,
-    Federated,
-}
-
 /// Parse "start:step:end" into a Vec<f64>.
 fn parse_range_f64(s: &str) -> Result<Vec<f64>, String> {
     let parts: Vec<&str> = s.split(':').collect();
@@ -168,27 +156,6 @@ fn parse_range_u64(s: &str) -> Result<Vec<u64>, String> {
         }
         _ => Err("expected format: start:end or single value".into()),
     }
-}
-
-fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String> {
-    let mut out = Vec::new();
-    for token in s.split(',').map(|v| v.trim()).filter(|v| !v.is_empty()) {
-        let kind = match token.to_ascii_lowercase().as_str() {
-            "fp" => SchedulerKind::Fp,
-            "edf" => SchedulerKind::Edf,
-            "edfvd" => SchedulerKind::Edfvd,
-            "llf" => SchedulerKind::Llf,
-            "heft" => SchedulerKind::Heft,
-            "cpedf" => SchedulerKind::Cpedf,
-            "federated" => SchedulerKind::Federated,
-            _ => return Err(format!("unknown scheduler: {token}")),
-        };
-        out.push(kind);
-    }
-    if out.is_empty() {
-        return Err("scheduler list is empty".to_string());
-    }
-    Ok(out)
 }
 
 fn init_tracing(verbose: bool) {
@@ -566,30 +533,6 @@ fn load_workload_input(cli: &Cli) -> anyhow::Result<WorkloadInput> {
     })
 }
 
-fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
-    match kind {
-        SchedulerKind::Fp => Box::new(FixedPriorityScheduler),
-        SchedulerKind::Edf => Box::new(EdfScheduler),
-        SchedulerKind::Edfvd => Box::new(EdfVdScheduler::default()),
-        SchedulerKind::Llf => Box::new(LlfScheduler::default()),
-        SchedulerKind::Heft => Box::new(HeftScheduler::default()),
-        SchedulerKind::Cpedf => Box::new(CpEdfScheduler::default()),
-        SchedulerKind::Federated => Box::new(FederatedScheduler::default()),
-    }
-}
-
-fn scheduler_label(kind: SchedulerKind) -> &'static str {
-    match kind {
-        SchedulerKind::Fp => "FP-Het",
-        SchedulerKind::Edf => "EDF-Het",
-        SchedulerKind::Edfvd => "EDF-VD-Het",
-        SchedulerKind::Llf => "LLF-Het",
-        SchedulerKind::Heft => "HEFT",
-        SchedulerKind::Cpedf => "CP-EDF",
-        SchedulerKind::Federated => "Federated",
-    }
-}
-
 fn main() {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -890,8 +833,10 @@ mod tests {
             .canonicalize()
             .expect("workspace root should resolve");
         let platform_path = workspace_root.join("configs/platform_ft2000_full.toml");
-        let replay_tasks = workspace_root.join("crates/hprss-workload/tests/fixtures/replay_tasks.csv");
-        let replay_jobs = workspace_root.join("crates/hprss-workload/tests/fixtures/replay_jobs.csv");
+        let replay_tasks =
+            workspace_root.join("crates/hprss-workload/tests/fixtures/replay_tasks.csv");
+        let replay_jobs =
+            workspace_root.join("crates/hprss-workload/tests/fixtures/replay_jobs.csv");
 
         let cli = Cli::try_parse_from([
             "hprss-sim",
@@ -907,8 +852,8 @@ mod tests {
         .expect("cli parsing should succeed");
 
         let workload = load_workload_input(&cli).expect("replay workload should load");
-        let platform =
-            PlatformConfig::load(&platform_path).expect("platform fixture should load for replay test");
+        let platform = PlatformConfig::load(&platform_path)
+            .expect("platform fixture should load for replay test");
         let seed = cli.seed.unwrap_or(platform.simulation.seed);
 
         let (first, _) = run_single(&platform, &workload, seed, cli.scheduler, None)
@@ -951,12 +896,12 @@ mod tests {
         .expect("cli parsing should succeed");
 
         let workload = load_workload_input(&cli).expect("replay workload should load");
-        let platform =
-            PlatformConfig::load(&platform_path).expect("platform fixture should load for replay test");
+        let platform = PlatformConfig::load(&platform_path)
+            .expect("platform fixture should load for replay test");
         let seed = cli.seed.unwrap_or(platform.simulation.seed);
 
-        let (result, _) =
-            run_single(&platform, &workload, seed, cli.scheduler, None).expect("run should succeed");
+        let (result, _) = run_single(&platform, &workload, seed, cli.scheduler, None)
+            .expect("run should succeed");
 
         assert_eq!(result.total_jobs, 1);
         assert!(

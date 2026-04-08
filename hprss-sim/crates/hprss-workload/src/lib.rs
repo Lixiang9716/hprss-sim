@@ -14,6 +14,6 @@ pub use dag_generator::{
 };
 pub use generator::{WorkloadConfig, generate_taskset};
 pub use replay::{
-    ReplayJobSpec, ReplayTaskSpec, ReplayWorkload, ReplayWorkloadError, load_replay_csv,
-    load_replay_json,
+    ReplayExecHint, ReplayJobSpec, ReplayTaskSpec, ReplayWorkload, ReplayWorkloadError,
+    load_replay_csv, load_replay_json,
 };

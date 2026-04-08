@@ -70,12 +70,17 @@ pub enum ReplayWorkloadError {
 }
 
 impl ReplayWorkload {
+    /// Parse replay workload from JSON and apply deterministic normalization:
+    /// - validates schema-level/runtime constraints
+    /// - sorts jobs by `(release_ns, task_id, absolute_deadline_ns)`
     pub fn from_json_str(json: &str) -> Result<Self, ReplayWorkloadError> {
         let mut workload: ReplayWorkload = serde_json::from_str(json)?;
         workload.validate_and_normalize()?;
         Ok(workload)
     }
 
+    /// Parse replay workload from CSV task/job payloads with the same normalization
+    /// guarantees as [`Self::from_json_str`].
     pub fn from_csv_str(tasks_csv: &str, jobs_csv: &str) -> Result<Self, ReplayWorkloadError> {
         let mut task_reader = csv::Reader::from_reader(tasks_csv.as_bytes());
         let mut tasks = Vec::new();
@@ -95,6 +100,9 @@ impl ReplayWorkload {
         Ok(workload)
     }
 
+    /// Convert replay task specs into engine task descriptors.
+    ///
+    /// All generated tasks are aperiodic; replay jobs provide release/deadline timing.
     pub fn to_tasks(&self) -> Vec<Task> {
         self.tasks
             .iter()
@@ -121,6 +129,7 @@ impl ReplayWorkload {
             .collect()
     }
 
+    /// Access normalized replay jobs in deterministic dispatch order.
     pub fn jobs(&self) -> &[ReplayJobSpec] {
         &self.jobs
     }

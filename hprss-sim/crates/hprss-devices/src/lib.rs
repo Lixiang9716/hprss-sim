@@ -37,8 +37,8 @@ pub struct DispatchTimingInput {
 pub struct DispatchTiming {
     pub completion_time_ns: Nanos,
     pub next_preemption_point_ns: Option<Nanos>,
-    /// Additional model-specific delay (e.g. FPGA reconfiguration), exposed but not
-    /// applied automatically to preserve existing engine behavior unless consumed.
+    /// Additional model-specific delay (e.g. FPGA reconfiguration) that is
+    /// included when computing `completion_time_ns` / `next_preemption_point_ns`.
     pub additional_dispatch_delay_ns: Nanos,
 }
 
@@ -90,9 +90,7 @@ impl VirtualDeviceModel {
 
     pub fn from_preemption(preemption: PreemptionModel) -> Self {
         match preemption {
-            PreemptionModel::FullyPreemptive => {
-                Self::FullyPreemptive(FullyPreemptiveDevice)
-            }
+            PreemptionModel::FullyPreemptive => Self::FullyPreemptive(FullyPreemptiveDevice),
             PreemptionModel::LimitedPreemptive { granularity_ns } => {
                 Self::LimitedPreemptive(LimitedPreemptiveDevice { granularity_ns })
             }
@@ -116,8 +114,7 @@ impl VirtualDeviceModel {
             .saturating_add(input.context_switch_ns)
             .saturating_add(input.pre_dispatch_penalty_ns)
             .saturating_add(additional_dispatch_delay_ns);
-        let completion_time_ns = execution_start_ns
-            .saturating_add(input.remaining_exec_wall_ns);
+        let completion_time_ns = execution_start_ns.saturating_add(input.remaining_exec_wall_ns);
         let next_preemption_point_ns = self
             .behavior()
             .preemption_point_interval_ns()

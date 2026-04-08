@@ -282,36 +282,7 @@ impl SimEngine {
                     self.schedule_transfer_events(events);
                 }
                 EventKind::DeadlineCheck { job_id, .. } => {
-                    if let Some(job) = self.get_job(job_id)
-                        && job.has_missed_deadline(self.now)
-                    {
-                        tracing::warn!(
-                            "t={}: DEADLINE MISS job={:?} deadline={}",
-                            self.now,
-                            job_id,
-                            job.absolute_deadline
-                        );
-                        self.metrics
-                            .record_deadline_miss(job_id, job.task_id, self.now);
-                        let running_dev = self.device_mgr.devices().iter().find_map(|d| {
-                            if self.device_mgr.running_job(d.id) == Some(job_id) {
-                                Some(d.id)
-                            } else {
-                                None
-                            }
-                        });
-                        if let Some(dev) = running_dev {
-                            self.record_running_elapsed(job_id, dev);
-                        }
-                        if let Some(job_mut) = self.get_job_mut(job_id) {
-                            job_mut.transition(JobState::DeadlineMissed);
-                            job_mut.exec_start_time = None;
-                        }
-                        self.device_mgr.remove_job_from_all_queues(job_id);
-                        if let Some(dev) = running_dev {
-                            self.device_mgr.clear_running(dev);
-                        }
-                    }
+                    self.handle_deadline_check(job_id);
                 }
                 EventKind::BudgetOverrun { job_id, .. } => {
                     self.handle_budget_overrun(job_id, scheduler);
@@ -356,18 +327,8 @@ impl SimEngine {
             ArrivalModel::Aperiodic => None,
         });
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let task = &self.task_registry[task_id.0 as usize];
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_arrival(job, task, &view)
+        let Some(actions) = self.scheduler_on_job_arrival(scheduler, job_id, task_id) else {
+            return;
         };
         self.execute_actions(actions, false);
 
@@ -424,17 +385,8 @@ impl SimEngine {
 
         self.schedule_dag_outgoing_transfers(job_id, device_id);
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_complete(job, device_id, &view)
+        let Some(actions) = self.scheduler_on_job_complete(scheduler, job_id, device_id) else {
+            return;
         };
         self.execute_actions(actions, false);
     }
@@ -456,17 +408,8 @@ impl SimEngine {
             return;
         }
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let running_job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_preemption_point(device_id, running_job, &view)
+        let Some(actions) = self.scheduler_on_preemption_point(scheduler, device_id, job_id) else {
+            return;
         };
 
         self.execute_actions(actions, true);
@@ -520,18 +463,8 @@ impl SimEngine {
         }
 
         // Transfer completion re-enters the scheduling loop (arrival-like callback).
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let task = &self.task_registry[task_id.0 as usize];
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_arrival(job, task, &view)
+        let Some(actions) = self.scheduler_on_job_arrival(scheduler, job_id, task_id) else {
+            return;
         };
         self.execute_actions(actions, false);
     }
@@ -571,21 +504,51 @@ impl SimEngine {
         }
         self.criticality_level = CriticalityLevel::Hi;
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let trigger_job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_criticality_change(CriticalityLevel::Hi, trigger_job, &view)
+        let Some(actions) =
+            self.scheduler_on_criticality_change(scheduler, CriticalityLevel::Hi, job_id)
+        else {
+            return;
         };
         self.execute_actions(actions, false);
         self.drop_lo_critical_jobs();
         self.dispatch_after_criticality_switch(scheduler);
+    }
+
+    fn handle_deadline_check(&mut self, job_id: JobId) {
+        let Some(job) = self.get_job(job_id) else {
+            return;
+        };
+        if !job.has_missed_deadline(self.now) {
+            return;
+        }
+
+        tracing::warn!(
+            "t={}: DEADLINE MISS job={:?} deadline={}",
+            self.now,
+            job_id,
+            job.absolute_deadline
+        );
+        self.metrics
+            .record_deadline_miss(job_id, job.task_id, self.now);
+
+        let running_dev = self.device_mgr.devices().iter().find_map(|d| {
+            if self.device_mgr.running_job(d.id) == Some(job_id) {
+                Some(d.id)
+            } else {
+                None
+            }
+        });
+        if let Some(dev) = running_dev {
+            self.record_running_elapsed(job_id, dev);
+        }
+        if let Some(job_mut) = self.get_job_mut(job_id) {
+            job_mut.transition(JobState::DeadlineMissed);
+            job_mut.exec_start_time = None;
+        }
+        self.device_mgr.remove_job_from_all_queues(job_id);
+        if let Some(dev) = running_dev {
+            self.device_mgr.clear_running(dev);
+        }
     }
 
     fn dispatch_after_criticality_switch(&mut self, scheduler: &mut dyn Scheduler) {
@@ -595,21 +558,8 @@ impl SimEngine {
                 continue;
             }
 
-            let actions = {
-                self.device_mgr
-                    .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-                let view = self
-                    .device_mgr
-                    .scheduler_view(self.now, self.criticality_level);
-                let has_ready = view
-                    .ready_queues
-                    .iter()
-                    .find(|(did, _)| *did == device_id)
-                    .is_some_and(|(_, queue)| !queue.is_empty());
-                if !has_ready {
-                    continue;
-                }
-                scheduler.on_device_idle(device_id, &view)
+            let Some(actions) = self.scheduler_on_device_idle(scheduler, device_id) else {
+                continue;
             };
             self.execute_actions(actions, false);
         }
@@ -640,18 +590,103 @@ impl SimEngine {
             }
         }
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_reevaluation(trigger, &view)
-        };
+        let actions = self.scheduler_on_reevaluation(scheduler, trigger);
         self.execute_actions(actions, false);
         if trigger == ReevaluationTrigger::Periodic {
             self.schedule_next_periodic_reevaluation(scheduler);
         }
+    }
+
+    fn scheduler_on_job_arrival(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        job_id: JobId,
+        task_id: TaskId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let job = self.get_job(job_id)?;
+        let task = self.task(task_id)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_job_arrival(job, task, &view))
+    }
+
+    fn scheduler_on_job_complete(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        job_id: JobId,
+        device_id: DeviceId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let job = self.get_job(job_id)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_job_complete(job, device_id, &view))
+    }
+
+    fn scheduler_on_preemption_point(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        device_id: DeviceId,
+        job_id: JobId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let running_job = self.get_job(job_id)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_preemption_point(device_id, running_job, &view))
+    }
+
+    fn scheduler_on_criticality_change(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        new_level: CriticalityLevel,
+        trigger_job: JobId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let trigger_job = self.get_job(trigger_job)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_criticality_change(new_level, trigger_job, &view))
+    }
+
+    fn scheduler_on_device_idle(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        device_id: DeviceId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        let has_ready = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .is_some_and(|(_, queue)| !queue.is_empty());
+        has_ready.then(|| scheduler.on_device_idle(device_id, &view))
+    }
+
+    fn scheduler_on_reevaluation(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        trigger: ReevaluationTrigger,
+    ) -> Vec<Action> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        scheduler.on_reevaluation(trigger, &view)
     }
 
     fn execute_actions(&mut self, actions: Vec<Action>, at_preemption_point: bool) {
@@ -1259,20 +1294,35 @@ impl SimEngine {
 #[derive(Debug, Clone, serde::Serialize)]
 #[non_exhaustive]
 pub struct SimResult {
+    /// Number of jobs released into the simulation.
     pub total_jobs: u64,
+    /// Number of jobs that reached `Completed`.
     pub completed_jobs: u64,
+    /// Number of jobs transitioned to `DeadlineMissed`.
     pub deadline_misses: u64,
+    /// `deadline_misses / total_jobs` (0 when `total_jobs == 0`).
     pub miss_ratio: f64,
+    /// Convenience boolean (`deadline_misses == 0`).
     pub schedulable: bool,
+    /// Latest completion timestamp among completed jobs.
     pub makespan: Nanos,
+    /// Mean response time across completed jobs.
     pub avg_response_time: f64,
+    /// Busy-time derived utilization by device.
     pub per_device_utilization: Vec<DeviceUtilization>,
+    /// Sum of all transfer service + wait durations.
     pub transfer_overhead: Nanos,
+    /// Structured transfer/migration/bus wait decomposition.
     pub blocking_breakdown: BlockingBreakdown,
+    /// Maximum response time across completed jobs.
     pub worst_response_time: Nanos,
+    /// Count of successful preemption transitions.
     pub preemption_count: u64,
+    /// Count of migration operations initiated by schedulers.
     pub migration_count: u64,
+    /// Fraction of transfer time spent waiting on shared-bus arbitration.
     pub bus_contention_ratio: f64,
+    /// Number of processed events (including callbacks and simulation end).
     pub events_processed: u64,
     /// Conservative deterministic energy estimate:
     /// - execution: Σ_i(power_i_watts × busy_i_seconds)

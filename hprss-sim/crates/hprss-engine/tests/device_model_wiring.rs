@@ -144,7 +144,10 @@ fn run_single_device_two_job_scenario(
             arrival: ArrivalModel::Aperiodic,
             deadline: 10_000,
             criticality: CriticalityLevel::Lo,
-            exec_times: vec![(device.device_type, ExecutionTimeModel::Deterministic { wcet: low_exec_ns })],
+            exec_times: vec![(
+                device.device_type,
+                ExecutionTimeModel::Deterministic { wcet: low_exec_ns },
+            )],
             affinity: vec![device.device_type],
             data_size: 0,
         },
@@ -295,7 +298,10 @@ fn preemption_point_reschedules_until_job_finishes() {
         arrival: ArrivalModel::Aperiodic,
         deadline: 10_000,
         criticality: CriticalityLevel::Lo,
-        exec_times: vec![(DeviceType::Gpu, ExecutionTimeModel::Deterministic { wcet: 130 })],
+        exec_times: vec![(
+            DeviceType::Gpu,
+            ExecutionTimeModel::Deterministic { wcet: 130 },
+        )],
         affinity: vec![DeviceType::Gpu],
         data_size: 0,
     }]);
