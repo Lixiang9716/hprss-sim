@@ -14,6 +14,13 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+slab = "0.4.12"
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { version = "0.8", features = ["html_reports"] }
+hprss-workload = { workspace = true }
+
+[[bench]]
+name = "engine_bench"
+harness = false

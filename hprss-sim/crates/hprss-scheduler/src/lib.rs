@@ -2,10 +2,7 @@
 //!
 //! Built-in algorithms: Fixed Priority, EDF, LLF (heterogeneous variants).
 
-use hprss_types::{
-    Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView,
-    task::Task,
-};
+use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
 /// Fixed-Priority scheduler (Rate Monotonic as default priority assignment)
 pub struct FixedPriorityScheduler;
@@ -15,12 +12,7 @@ impl Scheduler for FixedPriorityScheduler {
         "FP-Het"
     }
 
-    fn on_job_arrival(
-        &mut self,
-        job: &Job,
-        task: &Task,
-        view: &SchedulerView<'_>,
-    ) -> Vec<Action> {
+    fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action> {
         // Basic strategy: find the first available device in affinity list,
         // check if preemption is needed
         let target_device = task

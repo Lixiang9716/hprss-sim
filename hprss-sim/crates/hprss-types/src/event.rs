@@ -7,7 +7,7 @@
 
 use std::cmp::Ordering;
 
-use crate::{BusId, ChainId, CriticalityLevel, DeviceId, JobId, Nanos, TaskId};
+use crate::{BusId, DeviceId, JobId, Nanos, TaskId};
 
 /// Simulation event
 #[derive(Debug, Clone)]
@@ -49,10 +49,7 @@ impl PartialOrd for Event {
 #[derive(Debug, Clone)]
 pub enum EventKind {
     /// A task releases a new job
-    TaskArrival {
-        task_id: TaskId,
-        job_id: JobId,
-    },
+    TaskArrival { task_id: TaskId, job_id: JobId },
 
     /// A job completes execution on a device
     JobComplete {
@@ -77,9 +74,7 @@ pub enum EventKind {
     },
 
     /// Shared bus arbitration tick
-    BusArbitration {
-        bus_id: BusId,
-    },
+    BusArbitration { bus_id: BusId },
 
     /// Deadline check for a job
     DeadlineCheck {
@@ -112,12 +107,13 @@ impl EventKind {
             | Self::TransferComplete {
                 expected_version, ..
             }
-            | Self::DeadlineCheck {
-                expected_version, ..
-            }
             | Self::BudgetOverrun {
                 expected_version, ..
             } => *expected_version != current_version,
+
+            // DeadlineCheck is never stale — the absolute deadline doesn't change
+            // when a job transitions between states.
+            Self::DeadlineCheck { .. } => false,
 
             // These events are never stale
             Self::TaskArrival { .. } | Self::BusArbitration { .. } | Self::SimulationEnd => false,

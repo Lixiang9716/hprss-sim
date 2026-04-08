@@ -2,4 +2,4 @@
 
 pub mod config;
 
-pub use config::PlatformConfig;
+pub use config::{PlatformConfig, PlatformError};

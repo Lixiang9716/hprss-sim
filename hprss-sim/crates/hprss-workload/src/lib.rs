@@ -1,7 +1,9 @@
 //! Workload generation for scheduling experiments.
 //!
-//! Implements standard RT task set generation methods:
-//! - UUniFast-Discard (Bini & Buttazzo, 2005)
-//! - Random DAG generation
+//! Implements UUniFast-Discard (Bini & Buttazzo, 2005) for
+//! synthetic real-time task set generation.
 
-pub struct WorkloadStub;
+pub mod generator;
+pub mod uunifast;
+
+pub use generator::{WorkloadConfig, generate_taskset};

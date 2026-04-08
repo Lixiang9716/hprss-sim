@@ -99,7 +99,7 @@ impl PlatformConfig {
     }
 
     /// Load from a TOML string (for testing)
-    pub fn from_str(s: &str) -> Result<Self, PlatformError> {
+    pub fn from_toml(s: &str) -> Result<Self, PlatformError> {
         toml::from_str(s).map_err(|e| PlatformError::ParseError("<string>".into(), e))
     }
 
@@ -127,6 +127,71 @@ impl PlatformConfig {
                     speed_factor: d.speed_factor,
                     multicore_policy,
                     power_watts: d.power_watts,
+                })
+            })
+            .collect()
+    }
+
+    /// Convert to typed InterconnectConfig list
+    pub fn build_interconnects(
+        &self,
+        devices: &[DeviceConfig],
+    ) -> Result<Vec<InterconnectConfig>, PlatformError> {
+        self.interconnect
+            .iter()
+            .map(|ic| {
+                let from = devices
+                    .iter()
+                    .find(|d| d.name == ic.from)
+                    .ok_or_else(|| {
+                        PlatformError::InvalidValue(format!("unknown device: {}", ic.from))
+                    })?
+                    .id;
+                let to = devices
+                    .iter()
+                    .find(|d| d.name == ic.to)
+                    .ok_or_else(|| {
+                        PlatformError::InvalidValue(format!("unknown device: {}", ic.to))
+                    })?
+                    .id;
+
+                let shared_bus = ic
+                    .shared_bus
+                    .as_deref()
+                    .map(|name| {
+                        self.shared_bus
+                            .iter()
+                            .position(|b| b.name == name)
+                            .map(|idx| BusId(idx as u32))
+                            .ok_or_else(|| {
+                                PlatformError::InvalidValue(format!("unknown bus: {name}"))
+                            })
+                    })
+                    .transpose()?;
+
+                Ok(InterconnectConfig {
+                    from,
+                    to,
+                    latency_ns: (ic.latency_us * 1_000.0) as u64,
+                    bandwidth_bytes_per_ns: ic.bandwidth_gbps / 8.0,
+                    shared_bus,
+                    arbitration: parse_bus_arbitration(&ic.arbitration)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Convert to typed SharedBusConfig list
+    pub fn build_buses(&self) -> Result<Vec<SharedBusConfig>, PlatformError> {
+        self.shared_bus
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                Ok(SharedBusConfig {
+                    id: BusId(i as u32),
+                    name: b.name.clone(),
+                    total_bandwidth_bytes_per_ns: b.total_bandwidth_gbps / 8.0,
+                    arbitration: parse_bus_arbitration(&b.arbitration)?,
                 })
             })
             .collect()
@@ -196,6 +261,28 @@ fn parse_multicore_policy(s: &str) -> Result<MultiCorePolicy, PlatformError> {
         }
         _ => Err(PlatformError::InvalidValue(format!(
             "unknown multicore policy: {s}"
+        ))),
+    }
+}
+
+fn parse_bus_arbitration(s: &str) -> Result<BusArbitration, PlatformError> {
+    match s.to_lowercase().as_str() {
+        "dedicated" => Ok(BusArbitration::Dedicated),
+        "round_robin" => Ok(BusArbitration::RoundRobin),
+        "priority_based" => Ok(BusArbitration::PriorityBased),
+        s if s.starts_with("tdma") => {
+            let slot: u64 = s
+                .trim_start_matches("tdma")
+                .trim_start_matches(['_', '('])
+                .trim_end_matches(')')
+                .parse()
+                .map_err(|_| PlatformError::InvalidValue(format!("invalid TDMA slot: {s}")))?;
+            Ok(BusArbitration::Tdma {
+                slot_ns: slot * 1_000,
+            })
+        }
+        _ => Err(PlatformError::InvalidValue(format!(
+            "unknown arbitration: {s}"
         ))),
     }
 }
@@ -272,7 +359,7 @@ arbitration = "priority_based"
 
     #[test]
     fn parse_sample_platform() {
-        let config = PlatformConfig::from_str(SAMPLE_TOML).expect("failed to parse TOML");
+        let config = PlatformConfig::from_toml(SAMPLE_TOML).expect("failed to parse TOML");
         assert_eq!(config.device.len(), 4);
         assert_eq!(config.simulation.duration_ms, 10000);
         assert_eq!(config.simulation.seed, 42);
@@ -287,14 +374,74 @@ arbitration = "priority_based"
     }
 
     #[test]
+    fn build_interconnects_from_sample() {
+        let config = PlatformConfig::from_toml(SAMPLE_TOML).unwrap();
+        let devices = config.build_devices().unwrap();
+        let ics = config.build_interconnects(&devices).unwrap();
+        assert_eq!(ics.len(), 1);
+        assert_eq!(ics[0].from, DeviceId(0)); // FT2000
+        assert_eq!(ics[0].to, DeviceId(1)); // GP201
+        assert_eq!(ics[0].latency_ns, 2_000); // 2.0 us
+        assert!((ics[0].bandwidth_bytes_per_ns - 1.5).abs() < 1e-9); // 12 / 8
+        assert_eq!(ics[0].shared_bus, Some(BusId(0)));
+        assert!(matches!(ics[0].arbitration, BusArbitration::PriorityBased));
+    }
+
+    #[test]
+    fn build_buses_from_sample() {
+        let config = PlatformConfig::from_toml(SAMPLE_TOML).unwrap();
+        let buses = config.build_buses().unwrap();
+        assert_eq!(buses.len(), 1);
+        assert_eq!(buses[0].id, BusId(0));
+        assert_eq!(buses[0].name, "pcie_bus");
+        assert!((buses[0].total_bandwidth_bytes_per_ns - 2.0).abs() < 1e-9); // 16 / 8
+        assert!(matches!(
+            buses[0].arbitration,
+            BusArbitration::PriorityBased
+        ));
+    }
+
+    #[test]
+    fn parse_bus_arbitration_variants() {
+        use super::parse_bus_arbitration;
+
+        assert!(matches!(
+            parse_bus_arbitration("dedicated").unwrap(),
+            BusArbitration::Dedicated
+        ));
+        assert!(matches!(
+            parse_bus_arbitration("round_robin").unwrap(),
+            BusArbitration::RoundRobin
+        ));
+        assert!(matches!(
+            parse_bus_arbitration("priority_based").unwrap(),
+            BusArbitration::PriorityBased
+        ));
+        assert!(matches!(
+            parse_bus_arbitration("tdma_100").unwrap(),
+            BusArbitration::Tdma { slot_ns: 100_000 }
+        ));
+        assert!(matches!(
+            parse_bus_arbitration("TDMA(50)").unwrap(),
+            BusArbitration::Tdma { slot_ns: 50_000 }
+        ));
+        assert!(parse_bus_arbitration("bogus").is_err());
+    }
+
+    #[test]
     fn preemption_models_parsed() {
-        let config = PlatformConfig::from_str(SAMPLE_TOML).unwrap();
+        let config = PlatformConfig::from_toml(SAMPLE_TOML).unwrap();
         let devices = config.build_devices().unwrap();
 
-        assert!(matches!(devices[0].preemption, PreemptionModel::FullyPreemptive));
+        assert!(matches!(
+            devices[0].preemption,
+            PreemptionModel::FullyPreemptive
+        ));
         assert!(matches!(
             devices[1].preemption,
-            PreemptionModel::LimitedPreemptive { granularity_ns: 50_000 }
+            PreemptionModel::LimitedPreemptive {
+                granularity_ns: 50_000
+            }
         ));
         assert!(matches!(
             devices[2].preemption,
@@ -302,7 +449,9 @@ arbitration = "priority_based"
         ));
         assert!(matches!(
             devices[3].preemption,
-            PreemptionModel::NonPreemptive { reconfig_time_ns: 2_000_000 }
+            PreemptionModel::NonPreemptive {
+                reconfig_time_ns: 2_000_000
+            }
         ));
     }
 }

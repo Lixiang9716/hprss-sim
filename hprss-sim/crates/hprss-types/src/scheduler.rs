@@ -5,9 +5,7 @@
 //! an immutable SchedulerView and return a list of Actions.
 
 use crate::{
-    CriticalityLevel, DeviceId, Job, JobId, Nanos, TaskId,
-    device::DeviceConfig,
-    task::Task,
+    CriticalityLevel, DeviceId, Job, JobId, Nanos, TaskId, device::DeviceConfig, task::Task,
 };
 
 /// Immutable snapshot of observable simulation state.
@@ -57,10 +55,7 @@ pub struct QueuedJobInfo {
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Dispatch a job to a device for execution
-    Dispatch {
-        job_id: JobId,
-        device_id: DeviceId,
-    },
+    Dispatch { job_id: JobId, device_id: DeviceId },
 
     /// Preempt the victim job, replacing it with the new job
     Preempt {
@@ -77,10 +72,7 @@ pub enum Action {
     },
 
     /// Enqueue a job into a device's ready queue
-    Enqueue {
-        job_id: JobId,
-        device_id: DeviceId,
-    },
+    Enqueue { job_id: JobId, device_id: DeviceId },
 
     /// Drop a job (MC mode switch: discard Lo-criticality tasks)
     DropJob { job_id: JobId },
@@ -98,12 +90,7 @@ pub trait Scheduler: Send {
     fn name(&self) -> &str;
 
     /// A new job has been released (periodic timer / sporadic event / DAG predecessor done)
-    fn on_job_arrival(
-        &mut self,
-        job: &Job,
-        task: &Task,
-        view: &SchedulerView<'_>,
-    ) -> Vec<Action>;
+    fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action>;
 
     /// A job completed execution on a device
     fn on_job_complete(

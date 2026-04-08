@@ -9,6 +9,7 @@ members = [
     "crates/hprss-workload",
     "crates/hprss-metrics",
     "crates/hprss-validate",
+    "crates/hprss-sim",
 ]
 
 [workspace.package]
@@ -55,3 +56,7 @@ hprss-scheduler = { path = "crates/hprss-scheduler" }
 hprss-workload = { path = "crates/hprss-workload" }
 hprss-metrics = { path = "crates/hprss-metrics" }
 hprss-validate = { path = "crates/hprss-validate" }
+hprss-sim = { path = "crates/hprss-sim" }
+
+[profile.release]
+debug = true

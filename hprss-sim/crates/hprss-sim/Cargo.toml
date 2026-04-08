@@ -1,0 +1,18 @@
+[package]
+name = "hprss-sim"
+version.workspace = true
+edition.workspace = true
+description = "HPRSS command-line simulation runner"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+hprss-engine = { workspace = true }
+hprss-platform = { workspace = true }
+hprss-scheduler = { workspace = true }
+hprss-workload = { workspace = true }
+rayon = "1.11.0"
+csv = "1.4.0"

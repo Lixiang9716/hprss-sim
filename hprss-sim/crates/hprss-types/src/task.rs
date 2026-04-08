@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceId, Nanos, TaskId};
+use crate::{Nanos, TaskId};
 
 /// How a task arrives (release pattern)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,8 +171,14 @@ mod tests {
             deadline: 10_000_000,
             criticality: CriticalityLevel::Hi,
             exec_times: vec![
-                (DeviceType::Cpu, ExecutionTimeModel::Deterministic { wcet: 1_000_000 }),
-                (DeviceType::Gpu, ExecutionTimeModel::Deterministic { wcet: 200_000 }),
+                (
+                    DeviceType::Cpu,
+                    ExecutionTimeModel::Deterministic { wcet: 1_000_000 },
+                ),
+                (
+                    DeviceType::Gpu,
+                    ExecutionTimeModel::Deterministic { wcet: 200_000 },
+                ),
             ],
             affinity: vec![DeviceType::Cpu, DeviceType::Gpu],
             data_size: 4096,

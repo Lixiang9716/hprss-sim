@@ -43,10 +43,7 @@ pub enum JobState {
 
 impl JobState {
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Completed | Self::Dropped | Self::DeadlineMissed
-        )
+        matches!(self, Self::Completed | Self::Dropped | Self::DeadlineMissed)
     }
 
     pub fn is_active(&self) -> bool {
@@ -145,9 +142,9 @@ mod tests {
         let mut job = Job::new(
             JobId(0),
             TaskId(0),
-            0,           // release at t=0
-            10_000_000,  // deadline at 10ms
-            3_000_000,   // actual exec = 3ms
+            0,          // release at t=0
+            10_000_000, // deadline at 10ms
+            3_000_000,  // actual exec = 3ms
             1,
         );
 
