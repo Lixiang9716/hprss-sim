@@ -327,9 +327,7 @@ impl SimEngine {
             ArrivalModel::Aperiodic => None,
         });
 
-        let Some(actions) = self.scheduler_on_job_arrival(scheduler, job_id, task_id) else {
-            return;
-        };
+        let actions = self.scheduler_on_job_arrival(scheduler, job_id, task_id);
         self.execute_actions(actions, false);
 
         if let Some(release_time) = next_release {
@@ -463,9 +461,7 @@ impl SimEngine {
         }
 
         // Transfer completion re-enters the scheduling loop (arrival-like callback).
-        let Some(actions) = self.scheduler_on_job_arrival(scheduler, job_id, task_id) else {
-            return;
-        };
+        let actions = self.scheduler_on_job_arrival(scheduler, job_id, task_id);
         self.execute_actions(actions, false);
     }
 
@@ -602,15 +598,24 @@ impl SimEngine {
         scheduler: &mut dyn Scheduler,
         job_id: JobId,
         task_id: TaskId,
-    ) -> Option<Vec<Action>> {
+    ) -> Vec<Action> {
         self.device_mgr
             .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-        let job = self.get_job(job_id)?;
-        let task = self.task(task_id)?;
+        let Some(job) = self.get_job(job_id) else {
+            return vec![Action::NoOp];
+        };
+        // Behavior-preservation intent: arrival path historically relied on task-registry
+        // invariants and must fail loudly rather than silently skipping scheduler callbacks.
+        let task = self.task(task_id).unwrap_or_else(|| {
+            panic!(
+                "invariant violation: missing task metadata for arrival callback (task_id={}, job_id={})",
+                task_id.0, job_id.0
+            )
+        });
         let view = self
             .device_mgr
             .scheduler_view(self.now, self.criticality_level);
-        Some(scheduler.on_job_arrival(job, task, &view))
+        scheduler.on_job_arrival(job, task, &view)
     }
 
     fn scheduler_on_job_complete(
@@ -1430,7 +1435,7 @@ fn wall_to_work(wall_ns: Nanos, speed_factor: f64) -> Nanos {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hprss_types::device::PreemptionModel;
+    use hprss_types::{SchedulerView, device::PreemptionModel};
 
     fn cpu_device() -> DeviceConfig {
         DeviceConfig {
@@ -1692,5 +1697,75 @@ mod tests {
         // Execution: (5+10+20)W * 100ns = 3500e-9 J
         // Transfer counted once: 20W * 50ns = 1000e-9 J
         assert!((energy - 4_500.0e-9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "missing task metadata for arrival callback")]
+    fn arrival_callback_requires_registered_task_metadata() {
+        struct InvariantProbeScheduler;
+
+        impl Scheduler for InvariantProbeScheduler {
+            fn name(&self) -> &str {
+                "invariant-probe"
+            }
+
+            fn on_job_arrival(
+                &mut self,
+                _job: &Job,
+                _task: &Task,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_job_complete(
+                &mut self,
+                _job: &Job,
+                _device_id: DeviceId,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_preemption_point(
+                &mut self,
+                _device_id: DeviceId,
+                _running_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_criticality_change(
+                &mut self,
+                _new_level: CriticalityLevel,
+                _trigger_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+        }
+
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 100,
+                seed: 11,
+            },
+            vec![cpu_device()],
+            vec![],
+            vec![],
+        );
+        let missing_task_id = TaskId(7);
+        let job_id = engine.create_job(missing_task_id, 0, 50, Some(10), 1);
+        engine.schedule_event(
+            0,
+            EventKind::TaskArrival {
+                task_id: missing_task_id,
+                job_id,
+            },
+        );
+
+        let mut scheduler = InvariantProbeScheduler;
+        engine.run(&mut scheduler);
     }
 }
