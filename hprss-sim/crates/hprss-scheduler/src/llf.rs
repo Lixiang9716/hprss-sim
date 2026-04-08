@@ -342,6 +342,17 @@ impl Scheduler for LlfScheduler {
             actions
         }
     }
+
+    fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        self.observe_view(view);
+        match self.best_waiting_job(device_id, view) {
+            Some(next) => vec![Action::Dispatch {
+                job_id: next.job_id,
+                device_id,
+            }],
+            None => vec![Action::NoOp],
+        }
+    }
 }
 
 #[cfg(test)]

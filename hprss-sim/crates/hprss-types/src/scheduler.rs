@@ -184,6 +184,14 @@ pub trait Scheduler: Send {
         view: &SchedulerView<'_>,
     ) -> Vec<Action>;
 
+    /// A device is currently idle and can accept an eligible ready job.
+    ///
+    /// Used for deterministic redispatch after events such as mixed-criticality
+    /// mode switches where jobs may be dropped from running state.
+    fn on_device_idle(&mut self, _device_id: DeviceId, _view: &SchedulerView<'_>) -> Vec<Action> {
+        vec![Action::NoOp]
+    }
+
     /// Reevaluation policy used by the engine to safely schedule callbacks.
     ///
     /// Default is disabled for backward compatibility.

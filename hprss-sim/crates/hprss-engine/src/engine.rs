@@ -590,14 +590,10 @@ impl SimEngine {
         };
         self.execute_actions(actions, false);
         self.drop_lo_critical_jobs();
-        self.dispatch_after_criticality_switch(job_id, scheduler);
+        self.dispatch_after_criticality_switch(scheduler);
     }
 
-    fn dispatch_after_criticality_switch(
-        &mut self,
-        trigger_job_id: JobId,
-        scheduler: &mut dyn Scheduler,
-    ) {
+    fn dispatch_after_criticality_switch(&mut self, scheduler: &mut dyn Scheduler) {
         let device_ids: Vec<DeviceId> = self.device_mgr.devices().iter().map(|d| d.id).collect();
         for device_id in device_ids {
             if self.device_mgr.running_job(device_id).is_some() {
@@ -618,10 +614,7 @@ impl SimEngine {
                 if !has_ready {
                     continue;
                 }
-                let Some(trigger_job) = self.get_job(trigger_job_id) else {
-                    continue;
-                };
-                scheduler.on_job_complete(trigger_job, device_id, &view)
+                scheduler.on_device_idle(device_id, &view)
             };
             self.execute_actions(actions, false);
         }

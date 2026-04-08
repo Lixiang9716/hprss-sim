@@ -158,6 +158,22 @@ impl Scheduler for FixedPriorityScheduler {
             vec![Action::NoOp]
         }
     }
+
+    fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        let queue = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .map(|(_, q)| q);
+
+        match queue.and_then(|q| q.first()) {
+            Some(next) => vec![Action::Dispatch {
+                job_id: next.job_id,
+                device_id,
+            }],
+            None => vec![Action::NoOp],
+        }
+    }
 }
 
 #[cfg(test)]

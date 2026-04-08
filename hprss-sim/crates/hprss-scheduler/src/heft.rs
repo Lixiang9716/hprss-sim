@@ -159,6 +159,21 @@ impl Scheduler for HeftScheduler {
             vec![Action::NoOp]
         }
     }
+
+    fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        let next = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .and_then(|(_, q)| q.first());
+        match next {
+            Some(job) => vec![Action::Dispatch {
+                job_id: job.job_id,
+                device_id,
+            }],
+            None => vec![Action::NoOp],
+        }
+    }
 }
 
 fn compute_rank_u(dag: &DagTask, devices: &[DeviceConfig]) -> Vec<f64> {
