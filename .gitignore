@@ -8,3 +8,4 @@ hprss-sim/perf.data.old
 borrow2
 borrow3
 .worktrees/
+__pycache__/

@@ -12,8 +12,11 @@ SWEEP_TASKS  ?= 10,50,100,250
 SWEEP_SEEDS  ?= 1:10
 SWEEP_OUTPUT ?= sweep_results.csv
 SWEEP_JOBS   ?= 0
+PLOT_INPUT   ?= $(SWEEP_OUTPUT)
+PLOT_OUTPUT  ?= plots
+PLOT_TRACE   ?=
 
-.PHONY: help build release test check fmt clippy audit bench run sweep clean doc coverage flamegraph
+.PHONY: help build release test check fmt clippy audit bench run sweep plot plot-test clean doc coverage flamegraph
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -78,6 +81,12 @@ sweep: ## Parameter sweep in parallel (release)
 		--seeds $(SWEEP_SEEDS) \
 		--output $(SWEEP_OUTPUT) \
 		--jobs $(SWEEP_JOBS)
+
+plot: ## Plot paper metrics from sweep CSV (Python + matplotlib)
+	python3 scripts/plot_experiments.py --csv $(PLOT_INPUT) --output-dir $(PLOT_OUTPUT) $(if $(PLOT_TRACE),--trace-jsonl $(PLOT_TRACE),)
+
+plot-test: ## Run plotting script sanity tests (stdlib unittest)
+	python3 -m unittest scripts/test_plot_experiments.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts

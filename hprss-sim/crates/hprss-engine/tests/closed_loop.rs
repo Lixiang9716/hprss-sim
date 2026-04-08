@@ -1,8 +1,7 @@
 use hprss_engine::engine::{SimConfig, SimEngine};
 use hprss_scheduler::FixedPriorityScheduler;
 use hprss_types::{
-    BusArbitration, CriticalityLevel, DeviceId, InterconnectConfig, JobId, SharedBusConfig,
-    TaskId,
+    BusArbitration, CriticalityLevel, DeviceId, InterconnectConfig, JobId, SharedBusConfig, TaskId,
     device::{DeviceConfig, PreemptionModel},
     task::{ArrivalModel, DeviceType, ExecutionTimeModel, Task},
 };
@@ -72,6 +71,9 @@ fn cpu_task_releases_and_completes() {
     assert!(engine.metrics().total_jobs >= 1);
     assert!(engine.metrics().completed_jobs >= 1);
     assert_eq!(engine.metrics().deadline_misses, 0);
+    let summary = engine.summary();
+    assert!(summary.makespan > 0);
+    assert!(summary.avg_response_time > 0.0);
 }
 
 #[test]

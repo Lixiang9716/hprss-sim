@@ -150,8 +150,8 @@ mod tests {
         let mut job = Job::new(
             JobId(0),
             TaskId(0),
-            0,          // release at t=0
-            10_000_000, // deadline at 10ms
+            0,               // release at t=0
+            10_000_000,      // deadline at 10ms
             Some(3_000_000), // actual exec = 3ms
             1,
         );

@@ -37,11 +37,7 @@ impl DagTracker {
     }
 
     /// Register one DAG instance and append proxy tasks to the global task registry.
-    pub fn register_dag(
-        &mut self,
-        dag: DagTask,
-        task_registry: &mut Vec<Task>,
-    ) -> DagRegistration {
+    pub fn register_dag(&mut self, dag: DagTask, task_registry: &mut Vec<Task>) -> DagRegistration {
         let instance_id = DagInstanceId(self.next_instance_id);
         self.next_instance_id += 1;
 
@@ -100,7 +96,11 @@ impl DagTracker {
         }
     }
 
-    pub fn dag_provenance(&self, instance_id: DagInstanceId, task_id: TaskId) -> Option<DagProvenance> {
+    pub fn dag_provenance(
+        &self,
+        instance_id: DagInstanceId,
+        task_id: TaskId,
+    ) -> Option<DagProvenance> {
         let state = self.instances.get(&instance_id)?;
         let node = state.task_to_node.get(&task_id)?;
         Some(DagProvenance {
@@ -119,7 +119,11 @@ impl DagTracker {
     }
 
     pub fn proxy_task_id(&self, instance_id: DagInstanceId, node: SubTaskIdx) -> Option<TaskId> {
-        self.instances.get(&instance_id)?.node_to_task.get(&node).copied()
+        self.instances
+            .get(&instance_id)?
+            .node_to_task
+            .get(&node)
+            .copied()
     }
 
     /// Mark one edge token satisfied; returns successor proxy task IDs newly released.
@@ -156,7 +160,9 @@ impl DagTracker {
     }
 
     pub fn edges(&self, instance_id: DagInstanceId) -> Option<&[(usize, usize)]> {
-        self.instances.get(&instance_id).map(|s| s.task.edges.as_slice())
+        self.instances
+            .get(&instance_id)
+            .map(|s| s.task.edges.as_slice())
     }
 
     pub fn outgoing_edges(

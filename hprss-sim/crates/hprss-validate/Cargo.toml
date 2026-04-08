@@ -13,6 +13,8 @@ hprss-workload = { workspace = true }
 hprss-metrics = { workspace = true }
 approx = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
