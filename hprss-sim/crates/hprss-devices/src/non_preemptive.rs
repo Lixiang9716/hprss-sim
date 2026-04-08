@@ -1,6 +1,6 @@
 use hprss_types::Nanos;
 
-use crate::{DeviceBehavior, PreemptionCheckInput, PreemptionDecision};
+use crate::{DeviceBehavior, PreemptionCheckInput, PreemptionDecision, PreemptionOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NonPreemptiveDevice {
@@ -8,8 +8,11 @@ pub struct NonPreemptiveDevice {
 }
 
 impl DeviceBehavior for NonPreemptiveDevice {
-    fn evaluate_preemption(&self, _input: PreemptionCheckInput) -> PreemptionDecision {
-        PreemptionDecision::Never
+    fn evaluate_preemption(&self, _input: PreemptionCheckInput) -> PreemptionOutcome {
+        PreemptionOutcome {
+            decision: PreemptionDecision::Never,
+            penalty_ns: 0,
+        }
     }
 
     fn preemption_point_interval_ns(&self) -> Option<Nanos> {

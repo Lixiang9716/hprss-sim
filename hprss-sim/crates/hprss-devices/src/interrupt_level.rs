@@ -1,6 +1,6 @@
 use hprss_types::Nanos;
 
-use crate::{DeviceBehavior, PreemptionCheckInput, PreemptionDecision};
+use crate::{DeviceBehavior, PreemptionCheckInput, PreemptionDecision, PreemptionOutcome};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterruptLevelDevice {
@@ -9,11 +9,17 @@ pub struct InterruptLevelDevice {
 }
 
 impl DeviceBehavior for InterruptLevelDevice {
-    fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionDecision {
+    fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionOutcome {
         if input.at_preemption_point {
-            PreemptionDecision::AllowNow
+            PreemptionOutcome {
+                decision: PreemptionDecision::AllowNow,
+                penalty_ns: self.isr_overhead_ns,
+            }
         } else {
-            PreemptionDecision::DeferUntilPreemptionPoint
+            PreemptionOutcome {
+                decision: PreemptionDecision::DeferUntilPreemptionPoint,
+                penalty_ns: 0,
+            }
         }
     }
 

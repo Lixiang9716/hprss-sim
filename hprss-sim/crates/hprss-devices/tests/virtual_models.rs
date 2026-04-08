@@ -9,15 +9,17 @@ fn fully_preemptive_allows_immediate_preemption_and_no_boundary() {
     let timing = model.evaluate_dispatch_timing(DispatchTimingInput {
         now_ns: 100,
         context_switch_ns: 20,
+        pre_dispatch_penalty_ns: 0,
         remaining_exec_wall_ns: 1_000,
     });
     assert_eq!(timing.completion_time_ns, 1_120);
     assert_eq!(timing.next_preemption_point_ns, None);
 
-    let decision = model.evaluate_preemption(PreemptionCheckInput {
+    let outcome = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: false,
     });
-    assert_eq!(decision, PreemptionDecision::AllowNow);
+    assert_eq!(outcome.decision, PreemptionDecision::AllowNow);
+    assert_eq!(outcome.penalty_ns, 0);
 }
 
 #[test]
@@ -28,20 +30,23 @@ fn limited_preemptive_requires_boundary_and_sets_granularity_point() {
     let timing = model.evaluate_dispatch_timing(DispatchTimingInput {
         now_ns: 10,
         context_switch_ns: 5,
+        pre_dispatch_penalty_ns: 0,
         remaining_exec_wall_ns: 100,
     });
     assert_eq!(timing.completion_time_ns, 115);
-    assert_eq!(timing.next_preemption_point_ns, Some(510));
+    assert_eq!(timing.next_preemption_point_ns, Some(515));
 
     let blocked = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: false,
     });
-    assert_eq!(blocked, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(blocked.decision, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(blocked.penalty_ns, 0);
 
     let allowed = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: true,
     });
-    assert_eq!(allowed, PreemptionDecision::AllowNow);
+    assert_eq!(allowed.decision, PreemptionDecision::AllowNow);
+    assert_eq!(allowed.penalty_ns, 0);
 }
 
 #[test]
@@ -53,15 +58,23 @@ fn interrupt_level_requires_boundary_and_uses_dma_window() {
     let timing = model.evaluate_dispatch_timing(DispatchTimingInput {
         now_ns: 0,
         context_switch_ns: 10,
+        pre_dispatch_penalty_ns: 0,
         remaining_exec_wall_ns: 200,
     });
     assert_eq!(timing.completion_time_ns, 210);
-    assert_eq!(timing.next_preemption_point_ns, Some(900));
+    assert_eq!(timing.next_preemption_point_ns, Some(910));
 
     let decision = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: false,
     });
-    assert_eq!(decision, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(decision.decision, PreemptionDecision::DeferUntilPreemptionPoint);
+    assert_eq!(decision.penalty_ns, 0);
+
+    let allowed = model.evaluate_preemption(PreemptionCheckInput {
+        at_preemption_point: true,
+    });
+    assert_eq!(allowed.decision, PreemptionDecision::AllowNow);
+    assert_eq!(allowed.penalty_ns, 40);
 }
 
 #[test]
@@ -72,14 +85,16 @@ fn non_preemptive_never_preempts_and_reports_reconfiguration_cost() {
     let timing = model.evaluate_dispatch_timing(DispatchTimingInput {
         now_ns: 25,
         context_switch_ns: 10,
+        pre_dispatch_penalty_ns: 0,
         remaining_exec_wall_ns: 300,
     });
-    assert_eq!(timing.completion_time_ns, 335);
+    assert_eq!(timing.completion_time_ns, 2_335);
     assert_eq!(timing.next_preemption_point_ns, None);
     assert_eq!(timing.additional_dispatch_delay_ns, 2_000);
 
     let decision = model.evaluate_preemption(PreemptionCheckInput {
         at_preemption_point: true,
     });
-    assert_eq!(decision, PreemptionDecision::Never);
+    assert_eq!(decision.decision, PreemptionDecision::Never);
+    assert_eq!(decision.penalty_ns, 0);
 }

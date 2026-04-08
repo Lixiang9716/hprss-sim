@@ -16,7 +16,7 @@ use hprss_types::{
 };
 
 trait DeviceBehavior {
-    fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionDecision;
+    fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionOutcome;
     fn preemption_point_interval_ns(&self) -> Option<Nanos>;
     fn additional_dispatch_delay_ns(&self) -> Nanos {
         0
@@ -28,6 +28,7 @@ trait DeviceBehavior {
 pub struct DispatchTimingInput {
     pub now_ns: Nanos,
     pub context_switch_ns: Nanos,
+    pub pre_dispatch_penalty_ns: Nanos,
     pub remaining_exec_wall_ns: Nanos,
 }
 
@@ -45,6 +46,18 @@ pub struct DispatchTiming {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreemptionCheckInput {
     pub at_preemption_point: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreemptionOutcome {
+    pub decision: PreemptionDecision,
+    pub penalty_ns: Nanos,
+}
+
+impl PreemptionOutcome {
+    pub fn allows_preemption_now(self) -> bool {
+        self.decision.allows_preemption_now()
+    }
 }
 
 /// Decision returned by virtual devices for preemption requests.
@@ -97,22 +110,26 @@ impl VirtualDeviceModel {
     }
 
     pub fn evaluate_dispatch_timing(&self, input: DispatchTimingInput) -> DispatchTiming {
-        let completion_time_ns = input
+        let additional_dispatch_delay_ns = self.behavior().additional_dispatch_delay_ns();
+        let execution_start_ns = input
             .now_ns
             .saturating_add(input.context_switch_ns)
+            .saturating_add(input.pre_dispatch_penalty_ns)
+            .saturating_add(additional_dispatch_delay_ns);
+        let completion_time_ns = execution_start_ns
             .saturating_add(input.remaining_exec_wall_ns);
         let next_preemption_point_ns = self
             .behavior()
             .preemption_point_interval_ns()
-            .map(|interval| input.now_ns.saturating_add(interval));
+            .map(|interval| execution_start_ns.saturating_add(interval));
         DispatchTiming {
             completion_time_ns,
             next_preemption_point_ns,
-            additional_dispatch_delay_ns: self.behavior().additional_dispatch_delay_ns(),
+            additional_dispatch_delay_ns,
         }
     }
 
-    pub fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionDecision {
+    pub fn evaluate_preemption(&self, input: PreemptionCheckInput) -> PreemptionOutcome {
         self.behavior().evaluate_preemption(input)
     }
 

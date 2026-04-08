@@ -664,13 +664,11 @@ impl SimEngine {
                     device_id,
                 } => {
                     let model = VirtualDeviceModel::from_device(self.device_mgr.device(device_id));
-                    let allow_now = model
-                        .evaluate_preemption(PreemptionCheckInput {
-                            at_preemption_point,
-                        })
-                        .allows_preemption_now();
-                    if allow_now {
-                        self.preempt_job(victim, by, device_id);
+                    let outcome = model.evaluate_preemption(PreemptionCheckInput {
+                        at_preemption_point,
+                    });
+                    if outcome.allows_preemption_now() {
+                        self.preempt_job(victim, by, device_id, outcome.penalty_ns);
                     } else {
                         self.enqueue_job(by, device_id);
                     }
@@ -684,6 +682,15 @@ impl SimEngine {
     }
 
     fn dispatch_job(&mut self, job_id: JobId, device_id: DeviceId) {
+        self.dispatch_job_with_delay(job_id, device_id, 0);
+    }
+
+    fn dispatch_job_with_delay(
+        &mut self,
+        job_id: JobId,
+        device_id: DeviceId,
+        pre_dispatch_penalty_ns: Nanos,
+    ) {
         let Some(job_view) = self.get_job(job_id) else {
             return;
         };
@@ -790,6 +797,7 @@ impl SimEngine {
         let dispatch_timing = virtual_model.evaluate_dispatch_timing(DispatchTimingInput {
             now_ns: now,
             context_switch_ns,
+            pre_dispatch_penalty_ns,
             remaining_exec_wall_ns: wall_exec_ns,
         });
         self.schedule_event(
@@ -827,7 +835,13 @@ impl SimEngine {
         }
     }
 
-    fn preempt_job(&mut self, victim: JobId, by: JobId, device_id: DeviceId) {
+    fn preempt_job(
+        &mut self,
+        victim: JobId,
+        by: JobId,
+        device_id: DeviceId,
+        dispatch_penalty_ns: Nanos,
+    ) {
         if self.device_mgr.running_job(device_id) != Some(victim) {
             self.enqueue_job(by, device_id);
             return;
@@ -860,7 +874,7 @@ impl SimEngine {
         self.device_mgr.clear_running(device_id);
         self.device_mgr.enqueue(device_id, victim, victim_priority);
         self.preemption_count = self.preemption_count.saturating_add(1);
-        self.dispatch_job(by, device_id);
+        self.dispatch_job_with_delay(by, device_id, dispatch_penalty_ns);
     }
 
     fn enqueue_job(&mut self, job_id: JobId, device_id: DeviceId) {
