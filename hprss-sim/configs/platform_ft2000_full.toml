@@ -1,0 +1,80 @@
+# platform_ft2000_full.toml — Complete 4-device heterogeneous platform
+# FT2000-4 (CPU) + GP201 (GPU) + FT6678 (DSP) + Zynq7045 (FPGA)
+
+[simulation]
+duration_ms = 10000         # 10s simulation
+seed = 42
+
+[[device]]
+name = "FT2000"
+type = "cpu"
+cores = 4
+preemption = "fully_preemptive"
+context_switch_us = 5
+speed_factor = 1.0
+multicore_policy = "partitioned"
+power_watts = 15.0
+
+[[device]]
+name = "GP201"
+type = "gpu"
+cores = 128
+preemption = "limited"
+preemption_granularity_us = 50
+context_switch_us = 200
+speed_factor = 20.0
+power_watts = 75.0
+
+[[device]]
+name = "FT6678"
+type = "dsp"
+cores = 8
+preemption = "interrupt_level"
+isr_overhead_us = 5
+dma_non_preemptive_us = 100
+context_switch_us = 2
+speed_factor = 8.0
+power_watts = 10.0
+
+[[device]]
+name = "Zynq_FPGA"
+type = "fpga"
+cores = 1
+preemption = "non_preemptive"
+reconfig_time_us = 2000
+context_switch_us = 2000
+speed_factor = 15.0
+power_watts = 5.0
+
+[[interconnect]]
+from = "FT2000"
+to = "GP201"
+latency_us = 2.0
+bandwidth_gbps = 12.0
+shared_bus = "pcie_bus"
+arbitration = "priority_based"
+
+[[interconnect]]
+from = "FT2000"
+to = "FT6678"
+latency_us = 1.0
+bandwidth_gbps = 5.0
+shared_bus = "srio_bus"
+arbitration = "round_robin"
+
+[[interconnect]]
+from = "FT2000"
+to = "Zynq_FPGA"
+latency_us = 0.1
+bandwidth_gbps = 4.0
+arbitration = "dedicated"
+
+[[shared_bus]]
+name = "pcie_bus"
+total_bandwidth_gbps = 16.0
+arbitration = "priority_based"
+
+[[shared_bus]]
+name = "srio_bus"
+total_bandwidth_gbps = 10.0
+arbitration = "round_robin"

@@ -1,0 +1,18 @@
+[package]
+name = "hprss-validate"
+version.workspace = true
+edition.workspace = true
+description = "Validation tests against classical RT theory"
+
+[dependencies]
+hprss-types = { workspace = true }
+hprss-engine = { workspace = true }
+hprss-platform = { workspace = true }
+hprss-scheduler = { workspace = true }
+hprss-workload = { workspace = true }
+hprss-metrics = { workspace = true }
+approx = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "hprss-metrics"
+version.workspace = true
+edition.workspace = true
+description = "Metrics collection and result output"
+
+[dependencies]
+hprss-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

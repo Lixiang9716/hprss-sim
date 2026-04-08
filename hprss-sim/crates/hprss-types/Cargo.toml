@@ -1,0 +1,10 @@
+[package]
+name = "hprss-types"
+version.workspace = true
+edition.workspace = true
+description = "Core types for the HPRSS simulator"
+
+[dependencies]
+serde = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }

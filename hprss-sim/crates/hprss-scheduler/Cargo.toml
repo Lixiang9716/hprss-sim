@@ -1,0 +1,10 @@
+[package]
+name = "hprss-scheduler"
+version.workspace = true
+edition.workspace = true
+description = "Scheduler trait and built-in scheduling algorithms"
+
+[dependencies]
+hprss-types = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

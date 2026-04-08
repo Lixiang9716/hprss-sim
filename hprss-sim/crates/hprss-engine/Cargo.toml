@@ -1,0 +1,19 @@
+[package]
+name = "hprss-engine"
+version.workspace = true
+edition.workspace = true
+description = "Discrete Event Simulation engine"
+
+[dependencies]
+hprss-types = { workspace = true }
+hprss-platform = { workspace = true }
+hprss-devices = { workspace = true }
+hprss-scheduler = { workspace = true }
+hprss-metrics = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

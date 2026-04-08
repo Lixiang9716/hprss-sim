@@ -1,0 +1,15 @@
+[package]
+name = "hprss-workload"
+version.workspace = true
+edition.workspace = true
+description = "Workload generation (UUniFast, DAG, trace replay)"
+
+[dependencies]
+hprss-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+rand_chacha = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "hprss-devices"
+version.workspace = true
+edition.workspace = true
+description = "Virtual device simulators (vCPU, vGPU, vDSP, vFPGA)"
+
+[dependencies]
+hprss-types = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
