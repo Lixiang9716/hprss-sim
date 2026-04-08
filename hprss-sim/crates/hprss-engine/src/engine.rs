@@ -3,7 +3,7 @@
 use std::collections::BinaryHeap;
 use std::path::Path;
 
-use hprss_metrics::MetricsCollector;
+use hprss_metrics::{BlockingBreakdown, DeviceUtilization, MetricsCollector};
 use hprss_types::{
     Action, CriticalityLevel, DeviceId, Event, EventKind, InterconnectConfig, Job, JobId, JobState,
     Nanos, Scheduler, SharedBusConfig, Task, TaskId,
@@ -16,7 +16,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::{
     dag_tracker::DagTracker,
     device_manager::DeviceManager,
-    transfer_manager::{ScheduledEvent, TransferManager},
+    transfer_manager::{JobTransferKind, ScheduledEvent, TransferManager},
 };
 
 /// Simulation engine configuration
@@ -58,6 +58,12 @@ pub struct SimEngine {
     metrics: MetricsCollector,
     /// Events processed counter
     events_processed: u64,
+    /// Cumulative running (busy) wall-time per device.
+    device_busy_time_ns: Vec<Nanos>,
+    /// Number of successful preemptions performed by the engine.
+    preemption_count: u64,
+    /// Number of migrations performed by the engine.
+    migration_count: u64,
 }
 
 impl SimEngine {
@@ -69,6 +75,7 @@ impl SimEngine {
     ) -> Self {
         let seed = config.seed;
         Self {
+            device_busy_time_ns: vec![0; devices.len()],
             config,
             now: 0,
             event_queue: BinaryHeap::new(),
@@ -83,6 +90,8 @@ impl SimEngine {
             rng: ChaCha8Rng::seed_from_u64(seed),
             metrics: MetricsCollector::new(),
             events_processed: 0,
+            preemption_count: 0,
+            migration_count: 0,
         }
     }
 
@@ -251,18 +260,22 @@ impl SimEngine {
                         );
                         self.metrics
                             .record_deadline_miss(job_id, job.task_id, self.now);
-                        if let Some(job_mut) = self.get_job_mut(job_id) {
-                            job_mut.transition(JobState::DeadlineMissed);
-                            job_mut.exec_start_time = None;
-                        }
-                        self.device_mgr.remove_job_from_all_queues(job_id);
-                        if let Some(dev) = self.device_mgr.devices().iter().find_map(|d| {
+                        let running_dev = self.device_mgr.devices().iter().find_map(|d| {
                             if self.device_mgr.running_job(d.id) == Some(job_id) {
                                 Some(d.id)
                             } else {
                                 None
                             }
-                        }) {
+                        });
+                        if let Some(dev) = running_dev {
+                            self.record_running_elapsed(job_id, dev);
+                        }
+                        if let Some(job_mut) = self.get_job_mut(job_id) {
+                            job_mut.transition(JobState::DeadlineMissed);
+                            job_mut.exec_start_time = None;
+                        }
+                        self.device_mgr.remove_job_from_all_queues(job_id);
+                        if let Some(dev) = running_dev {
                             self.device_mgr.clear_running(dev);
                         }
                     }
@@ -340,6 +353,7 @@ impl SimEngine {
 
         let speed_factor = self.device_mgr.device(device_id).speed_factor;
         let now = self.now;
+        let mut busy_elapsed = 0;
         if let Some(job) = self.get_job_mut(job_id) {
             if job.state != JobState::Running {
                 return;
@@ -348,6 +362,7 @@ impl SimEngine {
                 let wall_elapsed = now.saturating_sub(start);
                 let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
                 job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             if let Some(actual_exec_ns) = job.actual_exec_ns {
                 job.executed_ns = actual_exec_ns;
@@ -361,6 +376,8 @@ impl SimEngine {
         } else {
             return;
         }
+        self.device_busy_time_ns[device_id.0 as usize] =
+            self.device_busy_time_ns[device_id.0 as usize].saturating_add(busy_elapsed);
 
         self.schedule_dag_outgoing_transfers(job_id, device_id);
 
@@ -632,6 +649,7 @@ impl SimEngine {
                 source,
                 device_id,
                 task.data_size,
+                JobTransferKind::Dispatch,
                 priority,
                 self.now,
                 expected_version,
@@ -725,6 +743,7 @@ impl SimEngine {
 
         let speed_factor = self.device_mgr.device(device_id).speed_factor;
         let now = self.now;
+        let mut busy_elapsed = 0;
         let victim_priority = {
             let Some(victim_job) = self.get_job_mut(victim) else {
                 return;
@@ -737,14 +756,18 @@ impl SimEngine {
                 let work_done =
                     wall_to_work(wall_elapsed, speed_factor).min(victim_job.remaining_ns());
                 victim_job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             victim_job.exec_start_time = None;
             victim_job.transition(JobState::Suspended);
             victim_job.effective_priority
         };
+        self.device_busy_time_ns[device_id.0 as usize] =
+            self.device_busy_time_ns[device_id.0 as usize].saturating_add(busy_elapsed);
 
         self.device_mgr.clear_running(device_id);
         self.device_mgr.enqueue(device_id, victim, victim_priority);
+        self.preemption_count = self.preemption_count.saturating_add(1);
         self.dispatch_job(by, device_id);
     }
 
@@ -773,6 +796,7 @@ impl SimEngine {
             .iter()
             .find_map(|d| (self.device_mgr.running_job(d.id) == Some(job_id)).then_some(d.id));
         if let Some(dev) = running_device {
+            self.record_running_elapsed(job_id, dev);
             self.device_mgr.clear_running(dev);
         }
 
@@ -796,6 +820,7 @@ impl SimEngine {
             .and_then(|job| self.task(job.task_id).map(|t| t.data_size))
             .unwrap_or(0);
 
+        let mut busy_elapsed = 0;
         let (priority, expected_version, data_size) = {
             let Some(job) = self.get_job_mut(job_id) else {
                 return;
@@ -807,12 +832,15 @@ impl SimEngine {
                 let wall_elapsed = now.saturating_sub(start);
                 let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
                 job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             job.exec_start_time = None;
             job.assigned_device = Some(to);
             job.transition(JobState::Migrating);
             (job.effective_priority, job.version, data_size)
         };
+        self.device_busy_time_ns[from.0 as usize] =
+            self.device_busy_time_ns[from.0 as usize].saturating_add(busy_elapsed);
         if was_running {
             self.device_mgr.clear_running(from);
         }
@@ -822,11 +850,13 @@ impl SimEngine {
             from,
             to,
             data_size,
+            JobTransferKind::Migration,
             priority,
             self.now,
             expected_version,
         );
         self.schedule_transfer_events(events);
+        self.migration_count = self.migration_count.saturating_add(1);
     }
 
     fn drop_lo_critical_jobs(&mut self) {
@@ -880,6 +910,21 @@ impl SimEngine {
     fn schedule_transfer_events(&mut self, events: Vec<ScheduledEvent>) {
         for ev in events {
             self.schedule_event(ev.time, ev.kind);
+        }
+    }
+
+    fn record_running_elapsed(&mut self, job_id: JobId, device_id: DeviceId) {
+        let speed_factor = self.device_mgr.device(device_id).speed_factor;
+        let now = self.now;
+        if let Some(job) = self.get_job_mut(job_id)
+            && job.state == JobState::Running
+            && let Some(start) = job.exec_start_time
+        {
+            let wall_elapsed = now.saturating_sub(start);
+            let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
+            job.record_progress(work_done);
+            self.device_busy_time_ns[device_id.0 as usize] =
+                self.device_busy_time_ns[device_id.0 as usize].saturating_add(wall_elapsed);
         }
     }
 
@@ -986,6 +1031,13 @@ impl SimEngine {
     /// Produce a summary of simulation results.
     pub fn summary(&self) -> SimResult {
         let m = &self.metrics;
+        let per_device_busy: Vec<(DeviceId, Nanos)> = self
+            .device_mgr
+            .devices()
+            .iter()
+            .map(|device| (device.id, self.device_busy_time_ns[device.id.0 as usize]))
+            .collect();
+        let transfer_stats = self.transfer_mgr.stats();
         SimResult {
             total_jobs: m.total_jobs,
             completed_jobs: m.completed_jobs,
@@ -994,6 +1046,17 @@ impl SimEngine {
             schedulable: m.is_schedulable(),
             makespan: m.makespan().unwrap_or(0),
             avg_response_time: m.avg_response_time().unwrap_or(0.0),
+            per_device_utilization: m.per_device_utilization(&per_device_busy),
+            transfer_overhead: transfer_stats.total_transfer_time_ns,
+            blocking_breakdown: BlockingBreakdown {
+                transfer_ns: transfer_stats.total_transfer_time_ns,
+                migration_ns: transfer_stats.migration_transfer_time_ns,
+                bus_wait_ns: transfer_stats.bus_wait_time_ns,
+            },
+            worst_response_time: m.worst_response_time().unwrap_or(0),
+            preemption_count: self.preemption_count,
+            migration_count: self.migration_count,
+            bus_contention_ratio: transfer_stats.bus_contention_ratio(),
             events_processed: self.events_processed,
         }
     }
@@ -1013,6 +1076,13 @@ pub struct SimResult {
     pub schedulable: bool,
     pub makespan: Nanos,
     pub avg_response_time: f64,
+    pub per_device_utilization: Vec<DeviceUtilization>,
+    pub transfer_overhead: Nanos,
+    pub blocking_breakdown: BlockingBreakdown,
+    pub worst_response_time: Nanos,
+    pub preemption_count: u64,
+    pub migration_count: u64,
+    pub bus_contention_ratio: f64,
     pub events_processed: u64,
 }
 
@@ -1174,5 +1244,110 @@ mod tests {
             sample_exec_time_for_device(&task, DeviceType::Cpu, CriticalityLevel::Hi, &mut rng),
             Some(20_000)
         );
+    }
+
+    #[test]
+    fn summary_exposes_expanded_metrics() {
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 1_000_000,
+                seed: 9,
+            },
+            vec![
+                cpu_device(),
+                DeviceConfig {
+                    id: DeviceId(1),
+                    name: "GPU".to_string(),
+                    device_group: None,
+                    device_type: DeviceType::Gpu,
+                    cores: 1,
+                    preemption: PreemptionModel::LimitedPreemptive {
+                        granularity_ns: 10_000,
+                    },
+                    context_switch_ns: 1_000,
+                    speed_factor: 1.0,
+                    multicore_policy: None,
+                    power_watts: None,
+                },
+            ],
+            vec![
+                InterconnectConfig {
+                    from: DeviceId(0),
+                    to: DeviceId(1),
+                    latency_ns: 100,
+                    bandwidth_bytes_per_ns: 1.0,
+                    shared_bus: Some(hprss_types::BusId(1)),
+                    arbitration: hprss_types::BusArbitration::RoundRobin,
+                },
+                InterconnectConfig {
+                    from: DeviceId(0),
+                    to: DeviceId(2),
+                    latency_ns: 100,
+                    bandwidth_bytes_per_ns: 1.0,
+                    shared_bus: Some(hprss_types::BusId(1)),
+                    arbitration: hprss_types::BusArbitration::RoundRobin,
+                },
+            ],
+            vec![SharedBusConfig {
+                id: hprss_types::BusId(1),
+                name: "sys".to_string(),
+                total_bandwidth_bytes_per_ns: 1.0,
+                arbitration: hprss_types::BusArbitration::RoundRobin,
+            }],
+        );
+
+        engine.metrics.record_job_release();
+        engine.metrics.record_job_release();
+        engine
+            .metrics
+            .record_completion(JobId(0), TaskId(0), 0, 100);
+        engine
+            .metrics
+            .record_completion(JobId(1), TaskId(1), 0, 200);
+        engine.device_busy_time_ns = vec![80, 120];
+        engine.preemption_count = 3;
+        engine.migration_count = 2;
+
+        let first = engine.transfer_mgr.initiate_transfer(
+            JobId(1),
+            DeviceId(0),
+            DeviceId(1),
+            100,
+            JobTransferKind::Dispatch,
+            0,
+            1_000,
+            1,
+        );
+        assert_eq!(first.len(), 1);
+        let queued = engine.transfer_mgr.initiate_transfer(
+            JobId(2),
+            DeviceId(0),
+            DeviceId(2),
+            100,
+            JobTransferKind::Migration,
+            0,
+            1_010,
+            1,
+        );
+        assert!(queued.is_empty());
+        let follow_up = engine
+            .transfer_mgr
+            .on_transfer_complete(JobId(1), first[0].time);
+        assert_eq!(follow_up.len(), 1);
+
+        let summary = engine.summary();
+        assert_eq!(summary.worst_response_time, 200);
+        assert_eq!(summary.preemption_count, 3);
+        assert_eq!(summary.migration_count, 2);
+        assert_eq!(
+            summary.blocking_breakdown.transfer_ns,
+            summary.transfer_overhead
+        );
+        assert!(summary.blocking_breakdown.migration_ns > 0);
+        assert!(summary.blocking_breakdown.bus_wait_ns > 0);
+        assert!(summary.bus_contention_ratio > 0.0);
+        assert_eq!(summary.per_device_utilization.len(), 2);
+        assert!((summary.per_device_utilization[0].utilization - 0.4).abs() < f64::EPSILON);
+        assert!((summary.per_device_utilization[1].utilization - 0.6).abs() < f64::EPSILON);
     }
 }

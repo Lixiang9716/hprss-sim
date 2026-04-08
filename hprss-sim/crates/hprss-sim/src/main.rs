@@ -178,6 +178,13 @@ struct SweepRow {
     config_hash: String,
     git_commit: String,
     timestamp: String,
+    per_device_utilization: String,
+    transfer_overhead: u64,
+    blocking_breakdown: String,
+    worst_response_time: u64,
+    preemption_count: u64,
+    migration_count: u64,
+    bus_contention_ratio: f64,
 }
 
 fn config_hash(path: &Path) -> anyhow::Result<String> {
@@ -205,6 +212,27 @@ fn run_timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+fn format_per_device_utilization_csv(values: &[(u32, u64, f64)]) -> String {
+    let items = values
+        .iter()
+        .map(|v| {
+            format!(
+                "{{\"device_id\":{},\"busy_ns\":{},\"utilization\":{:.6}}}",
+                v.0, v.1, v.2
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{items}]")
+}
+
+fn format_blocking_breakdown_csv(transfer_ns: u64, migration_ns: u64, bus_wait_ns: u64) -> String {
+    format!(
+        "{{\"transfer_ns\":{},\"migration_ns\":{},\"bus_wait_ns\":{}}}",
+        transfer_ns, migration_ns, bus_wait_ns
+    )
 }
 
 /// Run a single simulation and return the result with timing.
@@ -280,6 +308,11 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
     println!("schedulable     : {}", result.schedulable);
     println!("makespan_ns     : {}", result.makespan);
     println!("avg_response_ns : {:.3}", result.avg_response_time);
+    println!("worst_response_ns: {}", result.worst_response_time);
+    println!("transfer_overhead_ns: {}", result.transfer_overhead);
+    println!("preemption_count : {}", result.preemption_count);
+    println!("migration_count  : {}", result.migration_count);
+    println!("bus_contention_ratio: {:.6}", result.bus_contention_ratio);
     println!("events_processed: {}", result.events_processed);
     println!("wall_time_us    : {wall_us}");
 
@@ -368,6 +401,22 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
                     config_hash: run_config_hash.clone(),
                     git_commit: run_git_commit.clone(),
                     timestamp: run_timestamp.clone(),
+                    per_device_utilization: format_per_device_utilization_csv(
+                        &sim.per_device_utilization
+                            .iter()
+                            .map(|u| (u.device_id.0, u.busy_ns, u.utilization))
+                            .collect::<Vec<_>>(),
+                    ),
+                    transfer_overhead: sim.transfer_overhead,
+                    blocking_breakdown: format_blocking_breakdown_csv(
+                        sim.blocking_breakdown.transfer_ns,
+                        sim.blocking_breakdown.migration_ns,
+                        sim.blocking_breakdown.bus_wait_ns,
+                    ),
+                    worst_response_time: sim.worst_response_time,
+                    preemption_count: sim.preemption_count,
+                    migration_count: sim.migration_count,
+                    bus_contention_ratio: sim.bus_contention_ratio,
                 }),
                 Err(e) => {
                     eprintln!(
@@ -514,6 +563,15 @@ mod tests {
             config_hash: "abc123".to_string(),
             git_commit: "deadbeef".to_string(),
             timestamp: "2026-04-08T10:15:00Z".to_string(),
+            per_device_utilization: "[{\"device_id\":0,\"busy_ns\":1000,\"utilization\":0.5}]"
+                .to_string(),
+            transfer_overhead: 2048,
+            blocking_breakdown: "{\"transfer_ns\":2048,\"migration_ns\":512,\"bus_wait_ns\":64}"
+                .to_string(),
+            worst_response_time: 1000,
+            preemption_count: 3,
+            migration_count: 2,
+            bus_contention_ratio: 0.25,
         };
 
         let mut writer = csv::Writer::from_writer(vec![]);
@@ -530,6 +588,13 @@ mod tests {
         assert!(output.contains("config_hash"));
         assert!(output.contains("git_commit"));
         assert!(output.contains("timestamp"));
+        assert!(output.contains("per_device_utilization"));
+        assert!(output.contains("transfer_overhead"));
+        assert!(output.contains("blocking_breakdown"));
+        assert!(output.contains("worst_response_time"));
+        assert!(output.contains("preemption_count"));
+        assert!(output.contains("migration_count"));
+        assert!(output.contains("bus_contention_ratio"));
     }
 
     #[test]

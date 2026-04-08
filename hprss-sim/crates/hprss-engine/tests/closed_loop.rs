@@ -74,6 +74,11 @@ fn cpu_task_releases_and_completes() {
     let summary = engine.summary();
     assert!(summary.makespan > 0);
     assert!(summary.avg_response_time > 0.0);
+    assert!(summary.worst_response_time >= summary.avg_response_time as u64);
+    assert_eq!(summary.preemption_count, 0);
+    assert_eq!(summary.migration_count, 0);
+    assert_eq!(summary.bus_contention_ratio, 0.0);
+    assert_eq!(summary.per_device_utilization.len(), 1);
 }
 
 #[test]
@@ -132,6 +137,12 @@ fn accelerator_task_transfer_and_completion() {
         job.actual_exec_ns,
         Some(40_000),
         "actual exec time should match target GPU model"
+    );
+    let summary = engine.summary();
+    assert!(summary.transfer_overhead > 0);
+    assert_eq!(
+        summary.blocking_breakdown.transfer_ns,
+        summary.transfer_overhead
     );
 }
 
