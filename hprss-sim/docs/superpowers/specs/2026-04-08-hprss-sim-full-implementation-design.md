@@ -22,6 +22,16 @@
 - 无 DAG 任务支持
 - 无可视化输出
 
+### 1.3 现存 Bug (Phase 1 必须修复)
+
+**⚠️ BLOCKING: `sample_exec_time()` 始终使用 CPU WCET**
+
+当前 `engine.rs:893-935` 的 `sample_exec_time()` 在 Job 释放时采样执行时间，始终选择 CPU 的 WCET。当 Job 后续被调度到 GPU/DSP/FPGA 时，仍使用 CPU 时间计算 JobComplete 事件。
+
+**影响**: 所有异构调度实验结果不正确。
+
+**修复**: Phase 1 的 `p1-job-exec-time` 任务将修复此问题 — Job 释放时 `actual_exec_ns = None`，dispatch 时根据目标设备解析。
+
 ---
 
 ## 2. 设计决策
@@ -133,7 +143,72 @@ pub struct DagProvenance {
 - **边传输自动插入** — 跨设备边由引擎调用 TransferManager
 - **ompTG 兼容**: 支持 `target_hint`、per-edge `data_size`、barrier 节点
 
-### 3.6 DAG 工作负载生成
+### 3.6 SubTask → Task 代理 (架构补充)
+
+**问题**: `Scheduler::on_job_arrival(&Job, &Task, &SchedulerView)` 需要 `&Task`，但 DAG 节点是 `SubTask`。
+
+**解决方案**: DagTracker 在 DAG 注册时为每个 SubTask 合成代理 Task：
+
+```rust
+impl DagTracker {
+    /// 注册 DAG 任务，为每个 SubTask 创建代理 Task
+    pub fn register_dag(&mut self, dag: DagTask, task_registry: &mut Vec<Task>) -> TaskId {
+        let base_id = task_registry.len() as u32;
+        
+        for (idx, subtask) in dag.nodes.iter().enumerate() {
+            let proxy_task = Task {
+                id: TaskId(base_id + idx as u32),
+                name: format!("{}_node{}", dag.name, idx),
+                arrival: ArrivalModel::Aperiodic,  // DAG 节点由 DagTracker 触发
+                period: 0,
+                deadline: dag.deadline,  // 继承 DAG 整体 deadline
+                priority: dag.priority,
+                criticality: dag.criticality,
+                exec_times: subtask.exec_times.clone(),
+                affinity: subtask.affinity.clone(),
+                data_size: 0,  // 边传输由 DagTracker 管理
+                chain_id: None,
+            };
+            task_registry.push(proxy_task);
+        }
+        
+        TaskId(base_id)  // 返回第一个节点的 TaskId
+    }
+}
+```
+
+### 3.7 TransferManager 边 Token 扩展
+
+**问题**: 当前 `ActiveTransfer { job_id }` 无法区分同一后继的多条入边。
+
+**解决方案**: 扩展传输标识为边级别：
+
+```rust
+/// 边传输标识
+pub struct EdgeTransferId {
+    pub dag_instance_id: DagInstanceId,
+    pub from_node: SubTaskIdx,
+    pub to_node: SubTaskIdx,
+}
+
+/// 扩展 TransferManager API
+impl TransferManager {
+    /// DAG 边传输（区分同一后继的多条入边）
+    pub fn initiate_edge_transfer(
+        &mut self,
+        edge_id: EdgeTransferId,
+        source_device: DeviceId,
+        target_device: DeviceId,
+        data_size: u64,
+        priority: u32,
+        now: Nanos,
+    ) -> Vec<ScheduledEvent>;
+}
+```
+
+DagTracker 维护每个后继节点的入边计数器，仅当所有入边传输完成时才释放后继 Job。
+
+### 3.8 DAG 工作负载生成
 
 | 类型 | 参数 |
 |------|------|
@@ -264,11 +339,15 @@ job.actual_exec_ns = Some(actual_exec_ns);
 - `effective_priority` = `u32::MAX - (deadline / 1000)` (避免溢出)
 - ~150 LOC
 
-### 5.3 LLF-Het (推迟到 Phase 3+)
+### 5.3 LLF-Het (架构阻塞 — 不在本规格范围)
 
-**原因**: 当前 Scheduler trait 回调模型不支持 laxity 连续变化。需要添加 `ReevaluateEvent` 机制。
+**⚠️ 永久性架构限制**: LLF 需要计算 `laxity = deadline - now - remaining_exec`。但 `SchedulerView` 设计上隐藏了 `remaining_ns`（为了匹配真实硬件可观测性），调度器无法获取 Job 的剩余执行时间。
 
-**暂缓实现**，待 Phase 2 完成后评估是否需要扩展 Scheduler trait。
+**选项**:
+1. 暴露 WCET (悲观 `remaining ≤ wcet - elapsed`) — 可接受于分析工具
+2. 接受 LLF 是悲观近似，明确记录
+
+**决定**: LLF 不在本规格范围内。如需实现，需要先决定上述选项并修改 SchedulerView API。
 
 ### 5.4 HEFT (新增 — 单 DAG baseline)
 
