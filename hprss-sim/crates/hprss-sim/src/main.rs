@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hprss_engine::engine::{SimConfig, SimEngine, SimResult};
 use hprss_platform::PlatformConfig;
 use hprss_scheduler::{
-    EdfScheduler, EdfVdScheduler, FixedPriorityScheduler, HeftScheduler, LlfScheduler,
+    CpEdfScheduler, EdfScheduler, EdfVdScheduler, FederatedScheduler, FixedPriorityScheduler,
+    HeftScheduler, LlfScheduler,
 };
 use hprss_types::Scheduler;
 use hprss_workload::{WorkloadConfig, generate_taskset};
@@ -81,8 +82,8 @@ struct SweepArgs {
     #[arg(long, default_value_t = 0)]
     jobs: usize,
 
-    /// Comma-separated algorithms (fp,edf,edfvd,llf,heft)
-    #[arg(long, default_value = "fp,edf,edfvd,llf,heft")]
+    /// Comma-separated algorithms (fp,edf,edfvd,llf,heft,cpedf,federated)
+    #[arg(long, default_value = "fp,edf,edfvd,llf,heft,cpedf,federated")]
     schedulers: String,
 }
 
@@ -93,6 +94,8 @@ enum SchedulerKind {
     Edfvd,
     Llf,
     Heft,
+    Cpedf,
+    Federated,
 }
 
 /// Parse "start:step:end" into a Vec<f64>.
@@ -148,6 +151,8 @@ fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String> {
             "edfvd" => SchedulerKind::Edfvd,
             "llf" => SchedulerKind::Llf,
             "heft" => SchedulerKind::Heft,
+            "cpedf" => SchedulerKind::Cpedf,
+            "federated" => SchedulerKind::Federated,
             _ => return Err(format!("unknown scheduler: {token}")),
         };
         out.push(kind);
@@ -447,6 +452,8 @@ fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
         SchedulerKind::Edfvd => Box::new(EdfVdScheduler::default()),
         SchedulerKind::Llf => Box::new(LlfScheduler::default()),
         SchedulerKind::Heft => Box::new(HeftScheduler::default()),
+        SchedulerKind::Cpedf => Box::new(CpEdfScheduler::default()),
+        SchedulerKind::Federated => Box::new(FederatedScheduler::default()),
     }
 }
 
@@ -457,6 +464,8 @@ fn scheduler_label(kind: SchedulerKind) -> &'static str {
         SchedulerKind::Edfvd => "EDF-VD-Het",
         SchedulerKind::Llf => "LLF-Het",
         SchedulerKind::Heft => "HEFT",
+        SchedulerKind::Cpedf => "CP-EDF",
+        SchedulerKind::Federated => "Federated",
     }
 }
 
@@ -527,8 +536,35 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_cpedf_scheduler_switch() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--scheduler",
+            "cpedf",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(cli.scheduler, SchedulerKind::Cpedf);
+    }
+
+    #[test]
+    fn cli_accepts_federated_scheduler_switch() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--scheduler",
+            "federated",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(cli.scheduler, SchedulerKind::Federated);
+    }
+
+    #[test]
     fn parse_scheduler_list_supports_multiple_algorithms() {
-        let parsed = parse_scheduler_list("fp,edf,edfvd,llf,heft").expect("parse should succeed");
+        let parsed = parse_scheduler_list("fp,edf,edfvd,llf,heft,cpedf,federated")
+            .expect("parse should succeed");
         assert_eq!(
             parsed,
             vec![
@@ -536,7 +572,9 @@ mod tests {
                 SchedulerKind::Edf,
                 SchedulerKind::Edfvd,
                 SchedulerKind::Llf,
-                SchedulerKind::Heft
+                SchedulerKind::Heft,
+                SchedulerKind::Cpedf,
+                SchedulerKind::Federated
             ]
         );
     }

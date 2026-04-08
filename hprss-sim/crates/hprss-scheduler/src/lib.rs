@@ -1,16 +1,20 @@
 //! Scheduler trait implementations.
 //!
-//! Built-in algorithms: Fixed Priority, EDF, LLF (heterogeneous variants).
+//! Built-in algorithms: Fixed Priority, EDF family, LLF, HEFT, CP-EDF, Federated.
 
+pub mod cpedf;
 pub mod edf;
 pub mod edfvd;
+pub mod federated;
 pub mod heft;
 pub mod llf;
 
 use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
+pub use cpedf::CpEdfScheduler;
 pub use edf::EdfScheduler;
 pub use edfvd::EdfVdScheduler;
+pub use federated::FederatedScheduler;
 pub use heft::{HeftPlan, HeftPlanner, HeftScheduler};
 pub use llf::LlfScheduler;
 
@@ -205,6 +209,18 @@ mod tests {
     }
 
     #[test]
+    fn cpedf_scheduler_name() {
+        let sched = crate::cpedf::CpEdfScheduler::default();
+        assert_eq!(sched.name(), "CP-EDF");
+    }
+
+    #[test]
+    fn federated_scheduler_name() {
+        let sched = crate::federated::FederatedScheduler::default();
+        assert_eq!(sched.name(), "Federated");
+    }
+
+    #[test]
     fn fp_edf_heft_keep_reevaluation_disabled_by_default() {
         assert_eq!(
             FixedPriorityScheduler.reevaluation_policy(),
@@ -220,6 +236,14 @@ mod tests {
         );
         assert_eq!(
             crate::heft::HeftScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::cpedf::CpEdfScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::federated::FederatedScheduler::default().reevaluation_policy(),
             ReevaluationPolicy::Disabled
         );
     }
