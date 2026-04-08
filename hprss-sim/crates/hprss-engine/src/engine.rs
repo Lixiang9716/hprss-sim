@@ -1031,6 +1031,7 @@ impl SimEngine {
     /// Produce a summary of simulation results.
     pub fn summary(&self) -> SimResult {
         let m = &self.metrics;
+        let devices = self.device_mgr.devices();
         let per_device_busy: Vec<(DeviceId, Nanos)> = self
             .device_mgr
             .devices()
@@ -1058,6 +1059,11 @@ impl SimEngine {
             migration_count: self.migration_count,
             bus_contention_ratio: transfer_stats.bus_contention_ratio(),
             events_processed: self.events_processed,
+            energy_total_joules: energy_total_joules(
+                devices,
+                &per_device_busy,
+                transfer_stats.total_transfer_time_ns,
+            ),
         }
     }
 
@@ -1088,6 +1094,29 @@ pub struct SimResult {
     pub migration_count: u64,
     pub bus_contention_ratio: f64,
     pub events_processed: u64,
+    /// Conservative energy estimate:
+    /// Σ over devices (power_watts × (busy_ns + transfer_overhead_ns) / 1e9).
+    /// Missing power is treated as zero contribution.
+    pub energy_total_joules: f64,
+}
+
+fn energy_total_joules(
+    devices: &[DeviceConfig],
+    per_device_busy: &[(DeviceId, Nanos)],
+    transfer_overhead_ns: Nanos,
+) -> f64 {
+    devices
+        .iter()
+        .map(|device| {
+            let power_watts = device.power_watts.unwrap_or(0.0).max(0.0);
+            let busy_ns = per_device_busy
+                .iter()
+                .find_map(|(device_id, busy_ns)| (*device_id == device.id).then_some(*busy_ns))
+                .unwrap_or(0);
+            let active_ns = busy_ns.saturating_add(transfer_overhead_ns);
+            power_watts * (active_ns as f64 / 1_000_000_000.0)
+        })
+        .sum()
 }
 
 fn sample_exec_time_for_device(
@@ -1179,6 +1208,13 @@ mod tests {
         }
     }
 
+    fn powered_cpu_device(power_watts: Option<f64>) -> DeviceConfig {
+        DeviceConfig {
+            power_watts,
+            ..cpu_device()
+        }
+    }
+
     #[test]
     fn event_queue_ordering() {
         let config = SimConfig {
@@ -1258,7 +1294,7 @@ mod tests {
                 seed: 9,
             },
             vec![
-                cpu_device(),
+                powered_cpu_device(Some(10.0)),
                 DeviceConfig {
                     id: DeviceId(1),
                     name: "GPU".to_string(),
@@ -1271,7 +1307,7 @@ mod tests {
                     context_switch_ns: 1_000,
                     speed_factor: 1.0,
                     multicore_policy: None,
-                    power_watts: None,
+                    power_watts: Some(20.0),
                 },
             ],
             vec![
@@ -1357,5 +1393,31 @@ mod tests {
         assert_eq!(summary.per_device_utilization.len(), 2);
         assert!((summary.per_device_utilization[0].utilization - 0.4).abs() < f64::EPSILON);
         assert!((summary.per_device_utilization[1].utilization - 0.6).abs() < f64::EPSILON);
+        // Device 0: 10W * (80ns + 400ns), Device 1: 20W * (120ns + 400ns).
+        assert!(
+            (summary.energy_total_joules - 15_200.0e-9).abs() < f64::EPSILON,
+            "energy should include per-device busy time and transfer overhead"
+        );
+    }
+
+    #[test]
+    fn summary_energy_is_zero_when_power_is_missing() {
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 1_000_000,
+                seed: 7,
+            },
+            vec![cpu_device()],
+            vec![],
+            vec![],
+        );
+        engine.metrics.record_job_release();
+        engine
+            .metrics
+            .record_completion(JobId(0), TaskId(0), 0, 100);
+        engine.device_busy_time_ns = vec![100];
+
+        let summary = engine.summary();
+        assert_eq!(summary.energy_total_joules, 0.0);
     }
 }

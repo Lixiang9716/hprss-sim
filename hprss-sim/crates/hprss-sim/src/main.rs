@@ -185,6 +185,7 @@ struct SweepRow {
     preemption_count: u64,
     migration_count: u64,
     bus_contention_ratio: f64,
+    energy_total_joules: f64,
 }
 
 fn config_hash(path: &Path) -> anyhow::Result<String> {
@@ -296,6 +297,7 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
     println!("preemption_count : {}", result.preemption_count);
     println!("migration_count  : {}", result.migration_count);
     println!("bus_contention_ratio: {:.6}", result.bus_contention_ratio);
+    println!("energy_total_joules: {:.9}", result.energy_total_joules);
     println!("events_processed: {}", result.events_processed);
     println!("wall_time_us    : {wall_us}");
 
@@ -391,6 +393,7 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
                     preemption_count: sim.preemption_count,
                     migration_count: sim.migration_count,
                     bus_contention_ratio: sim.bus_contention_ratio,
+                    energy_total_joules: sim.energy_total_joules,
                 }),
                 Err(e) => {
                     eprintln!(
@@ -546,6 +549,7 @@ mod tests {
             preemption_count: 3,
             migration_count: 2,
             bus_contention_ratio: 0.25,
+            energy_total_joules: 0.123,
         };
 
         let mut writer = csv::Writer::from_writer(vec![]);
@@ -569,6 +573,7 @@ mod tests {
         assert!(output.contains("preemption_count"));
         assert!(output.contains("migration_count"));
         assert!(output.contains("bus_contention_ratio"));
+        assert!(output.contains("energy_total_joules"));
     }
 
     #[test]
