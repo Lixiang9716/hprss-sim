@@ -57,19 +57,24 @@ def normalized_output_path(path: Path, file_format: str | None) -> Path:
     return path.with_suffix(f".{file_format}")
 
 
-def _extract_int(data: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+def _extract_numeric_field(
+    data: dict[str, Any],
+    path: Path,
+    line_no: int,
+    keys: tuple[str, ...],
+    field_name: str,
+    caster,
+):
     for key in keys:
-        value = data.get(key)
-        if value is not None:
-            return int(value)
-    return None
-
-
-def _extract_time(data: dict[str, Any]) -> float | None:
-    for key in ("time", "t"):
-        value = data.get(key)
-        if value is not None:
-            return float(value)
+        if key not in data:
+            continue
+        value = data[key]
+        try:
+            return caster(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path}:{line_no}:{field_name}: invalid value {value!r}"
+            ) from exc
     return None
 
 
@@ -87,14 +92,22 @@ def load_trace_rows(path: Path) -> list[EventRow]:
             if not isinstance(data, dict):
                 raise ValueError(f"invalid record at {path}:{line_no}: expected object")
 
-            timestamp = _extract_time(data)
-            task_id = _extract_int(data, ("task_id", "task"))
-            job_id = _extract_int(data, ("job_id", "job"))
+            timestamp = _extract_numeric_field(
+                data, path, line_no, ("time", "t"), "time", float
+            )
+            task_id = _extract_numeric_field(
+                data, path, line_no, ("task_id", "task"), "task_id", int
+            )
+            job_id = _extract_numeric_field(
+                data, path, line_no, ("job_id", "job"), "job_id", int
+            )
             event = str(data.get("event", "unknown"))
-            if timestamp is None or task_id is None or job_id is None:
-                raise ValueError(
-                    f"missing one of time/t, task_id/task, job_id/job at {path}:{line_no}"
-                )
+            if timestamp is None:
+                raise ValueError(f"{path}:{line_no}:time: missing required field")
+            if task_id is None:
+                raise ValueError(f"{path}:{line_no}:task_id: missing required field")
+            if job_id is None:
+                raise ValueError(f"{path}:{line_no}:job_id: missing required field")
             rows.append((event, task_id, job_id, timestamp))
 
     if not rows:

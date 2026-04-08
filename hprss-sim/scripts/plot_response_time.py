@@ -14,7 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from plot_experiments import REQUIRED_COLUMNS, apply_publication_style, get_plot_backend
+from plot_experiments import apply_publication_style, get_plot_backend
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -55,8 +55,7 @@ def normalized_output_path(path: Path, file_format: str | None) -> Path:
 
 
 def load_rows_for_metric(csv_path: Path, metric: str) -> list[dict[str, float | str | bool]]:
-    required = set(REQUIRED_COLUMNS)
-    required.add(metric)
+    required = {"algorithm", metric}
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:

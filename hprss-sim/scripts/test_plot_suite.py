@@ -23,6 +23,7 @@ plot_schedulability = load_module("plot_schedulability")
 plot_response_time = load_module("plot_response_time")
 plot_comparison = load_module("plot_comparison")
 plot_gantt = load_module("plot_gantt")
+plot_experiments = load_module("plot_experiments")
 
 
 class PlotSuiteTests(unittest.TestCase):
@@ -105,6 +106,20 @@ class PlotSuiteTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(out.exists())
 
+    def test_response_helpers_group_and_cdf_monotonic(self) -> None:
+        rows = [
+            {"algorithm": "B", "avg_response_time": 30.0},
+            {"algorithm": "A", "avg_response_time": 20.0},
+            {"algorithm": "A", "avg_response_time": 10.0},
+        ]
+        grouped = plot_response_time.metric_samples_by_algorithm(rows, "avg_response_time")
+        self.assertEqual(list(grouped.keys()), ["A", "B"])
+        self.assertEqual(grouped["A"], [10.0, 20.0])
+        xs, ys = plot_response_time.cdf_points(grouped["A"])
+        self.assertEqual(xs, [10.0, 20.0])
+        self.assertEqual(ys, [0.5, 1.0])
+        self.assertTrue(all(ys[i] <= ys[i + 1] for i in range(len(ys) - 1)))
+
     def test_comparison_plot_cli(self) -> None:
         out = self.artifacts_dir / "comparison.pdf"
         rc = plot_comparison.main(
@@ -123,7 +138,18 @@ class PlotSuiteTests(unittest.TestCase):
         bad_trace = self.artifacts_dir / "bad_trace.jsonl"
         with bad_trace.open("w", encoding="utf-8") as handle:
             handle.write('{"event":"job_complete","time":10,"task_id":1}\n')
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(
+            ValueError, rf"{bad_trace}:1:job_id"
+        ):
+            plot_gantt.load_trace_rows(bad_trace)
+
+    def test_gantt_loader_rejects_invalid_numeric_field_with_context(self) -> None:
+        bad_trace = self.artifacts_dir / "bad_time_trace.jsonl"
+        with bad_trace.open("w", encoding="utf-8") as handle:
+            handle.write('{"event":"job_complete","time":"bad","task_id":1,"job_id":3}\n')
+        with self.assertRaisesRegex(
+            ValueError, rf"{bad_trace}:1:time"
+        ):
             plot_gantt.load_trace_rows(bad_trace)
 
     def test_response_plot_cli_reports_missing_metric_column(self) -> None:
@@ -147,6 +173,36 @@ class PlotSuiteTests(unittest.TestCase):
             ["--csv", str(missing_csv), "--metric", "worst_response_time"]
         )
         self.assertEqual(rc, 2)
+
+    def test_response_plot_loader_requires_only_algorithm_and_selected_metric(self) -> None:
+        minimal_csv = self.artifacts_dir / "minimal_avg.csv"
+        with minimal_csv.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["algorithm", "avg_response_time"])
+            writer.writerow(["FP-Het", 123.0])
+            writer.writerow(["EDF-Het", 98.0])
+
+        rows = plot_response_time.load_rows_for_metric(minimal_csv, "avg_response_time")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["algorithm"], "FP-Het")
+        self.assertEqual(rows[1]["avg_response_time"], 98.0)
+
+    def test_schedulability_aggregation_deterministic_values(self) -> None:
+        rows = [
+            {"algorithm": "FP-Het", "utilization": 0.7, "miss_ratio": 0.2, "schedulable": False},
+            {"algorithm": "FP-Het", "utilization": 0.5, "miss_ratio": 0.0, "schedulable": True},
+            {"algorithm": "FP-Het", "utilization": 0.7, "miss_ratio": 0.0, "schedulable": True},
+            {"algorithm": "EDF-Het", "utilization": 0.5, "miss_ratio": 0.1, "schedulable": False},
+            {"algorithm": "EDF-Het", "utilization": 0.5, "miss_ratio": 0.0, "schedulable": True},
+        ]
+        curves = plot_experiments.aggregate_sched_miss_by_algorithm(rows)
+        self.assertEqual([point[0] for point in curves["FP-Het"]], [0.5, 0.7])
+        fp_u07 = curves["FP-Het"][1]
+        self.assertAlmostEqual(fp_u07[1], 0.5)
+        self.assertAlmostEqual(fp_u07[2], 0.1)
+        edf_u05 = curves["EDF-Het"][0]
+        self.assertAlmostEqual(edf_u05[1], 0.5)
+        self.assertAlmostEqual(edf_u05[2], 0.05)
 
 
 if __name__ == "__main__":
