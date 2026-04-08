@@ -2,10 +2,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use hprss_engine::engine::{SimConfig, SimEngine, SimResult};
 use hprss_platform::PlatformConfig;
-use hprss_scheduler::FixedPriorityScheduler;
+use hprss_scheduler::{EdfScheduler, FixedPriorityScheduler, HeftScheduler};
+use hprss_types::Scheduler;
 use hprss_workload::{WorkloadConfig, generate_taskset};
 use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -36,6 +37,14 @@ struct Cli {
     /// Enable verbose trace logs
     #[arg(long, default_value_t = false, global = true)]
     verbose: bool,
+
+    /// Scheduling algorithm
+    #[arg(long, value_enum, default_value_t = SchedulerKind::Fp, global = true)]
+    scheduler: SchedulerKind,
+
+    /// Write simulation trace as JSON-lines
+    #[arg(long, global = true)]
+    trace_output: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -67,6 +76,17 @@ struct SweepArgs {
     /// Number of Rayon threads (0 = all available cores)
     #[arg(long, default_value_t = 0)]
     jobs: usize,
+
+    /// Comma-separated algorithms (fp,edf,heft)
+    #[arg(long, default_value = "fp,edf,heft")]
+    schedulers: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SchedulerKind {
+    Fp,
+    Edf,
+    Heft,
 }
 
 /// Parse "start:step:end" into a Vec<f64>.
@@ -113,6 +133,23 @@ fn parse_range_u64(s: &str) -> Result<Vec<u64>, String> {
     }
 }
 
+fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String> {
+    let mut out = Vec::new();
+    for token in s.split(',').map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        let kind = match token.to_ascii_lowercase().as_str() {
+            "fp" => SchedulerKind::Fp,
+            "edf" => SchedulerKind::Edf,
+            "heft" => SchedulerKind::Heft,
+            _ => return Err(format!("unknown scheduler: {token}")),
+        };
+        out.push(kind);
+    }
+    if out.is_empty() {
+        return Err("scheduler list is empty".to_string());
+    }
+    Ok(out)
+}
+
 fn init_tracing(verbose: bool) {
     let default_level = if verbose { "trace" } else { "info" };
     let filter =
@@ -142,6 +179,8 @@ fn run_single(
     num_tasks: usize,
     utilization: f64,
     seed: u64,
+    scheduler_kind: SchedulerKind,
+    trace_output: Option<&std::path::Path>,
 ) -> anyhow::Result<(SimResult, u64)> {
     let devices = platform.build_devices()?;
     let interconnects = platform.build_interconnects(&devices)?;
@@ -167,10 +206,15 @@ fn run_single(
     engine.register_tasks(tasks);
     engine.schedule_initial_arrivals();
 
-    let mut scheduler = FixedPriorityScheduler;
+    let mut scheduler = build_scheduler(scheduler_kind);
     let t0 = Instant::now();
-    engine.run(&mut scheduler);
+    engine.run(scheduler.as_mut());
     let wall_us = t0.elapsed().as_micros() as u64;
+    if let Some(path) = trace_output {
+        engine
+            .write_trace_jsonl(path)
+            .with_context(|| format!("failed to write trace to {}", path.display()))?;
+    }
 
     Ok((engine.summary(), wall_us))
 }
@@ -185,7 +229,14 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
     })?;
 
     let seed = cli.seed.unwrap_or(platform.simulation.seed);
-    let (result, wall_us) = run_single(&platform, cli.tasks, cli.utilization, seed)?;
+    let (result, wall_us) = run_single(
+        &platform,
+        cli.tasks,
+        cli.utilization,
+        seed,
+        cli.scheduler,
+        cli.trace_output.as_deref(),
+    )?;
 
     println!("HPRSS Simulation Summary");
     println!("total_jobs      : {}", result.total_jobs);
@@ -217,13 +268,17 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
         .collect::<Result<_, _>>()
         .map_err(|e| anyhow::anyhow!("bad --task-counts: {e}"))?;
     let seeds = parse_range_u64(&sweep.seeds).map_err(|e| anyhow::anyhow!("bad --seeds: {e}"))?;
+    let schedulers =
+        parse_scheduler_list(&sweep.schedulers).map_err(|e| anyhow::anyhow!("bad --schedulers: {e}"))?;
 
-    // Build cartesian product of (utilization, task_count, seed)
-    let mut configs: Vec<(f64, usize, u64)> = Vec::new();
+    // Build cartesian product of (utilization, task_count, seed, scheduler)
+    let mut configs: Vec<(f64, usize, u64, SchedulerKind)> = Vec::new();
     for &u in &utilizations {
         for &t in &task_counts {
             for &s in &seeds {
-                configs.push((u, t, s));
+                for &scheduler in &schedulers {
+                    configs.push((u, t, s, scheduler));
+                }
             }
         }
     }
@@ -250,8 +305,8 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
 
     let rows: Vec<SweepRow> = configs
         .par_iter()
-        .filter_map(|&(utilization, task_count, seed)| {
-            let result = run_single(&platform, task_count, utilization, seed);
+        .filter_map(|&(utilization, task_count, seed, scheduler)| {
+            let result = run_single(&platform, task_count, utilization, seed, scheduler, None);
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if done.is_multiple_of(10) || done == total {
                 eprint!("\r  [{done}/{total}]");
@@ -261,7 +316,7 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
                     utilization,
                     task_count,
                     seed,
-                    algorithm: "FP-Het".into(),
+                    algorithm: scheduler_label(scheduler).into(),
                     total_jobs: sim.total_jobs,
                     completed_jobs: sim.completed_jobs,
                     deadline_misses: sim.deadline_misses,
@@ -309,6 +364,22 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
+    match kind {
+        SchedulerKind::Fp => Box::new(FixedPriorityScheduler),
+        SchedulerKind::Edf => Box::new(EdfScheduler),
+        SchedulerKind::Heft => Box::new(HeftScheduler::default()),
+    }
+}
+
+fn scheduler_label(kind: SchedulerKind) -> &'static str {
+    match kind {
+        SchedulerKind::Fp => "FP-Het",
+        SchedulerKind::Edf => "EDF-Het",
+        SchedulerKind::Heft => "HEFT",
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -321,5 +392,62 @@ fn main() {
     if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_accepts_scheduler_switch() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--scheduler",
+            "edf",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(cli.scheduler, SchedulerKind::Edf);
+    }
+
+    #[test]
+    fn cli_scheduler_defaults_to_fp() {
+        let cli = Cli::try_parse_from(["hprss-sim", "--platform", "p.toml"])
+            .expect("cli parsing should succeed");
+        assert_eq!(cli.scheduler, SchedulerKind::Fp);
+    }
+
+    #[test]
+    fn parse_scheduler_list_supports_multiple_algorithms() {
+        let parsed = parse_scheduler_list("fp,edf,heft").expect("parse should succeed");
+        assert_eq!(
+            parsed,
+            vec![SchedulerKind::Fp, SchedulerKind::Edf, SchedulerKind::Heft]
+        );
+    }
+
+    #[test]
+    fn parse_scheduler_list_rejects_unknown_name() {
+        let err = parse_scheduler_list("fp,abc").expect_err("parse should fail");
+        assert!(err.contains("unknown scheduler"));
+    }
+
+    #[test]
+    fn cli_accepts_trace_output_path() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--trace-output",
+            "/tmp/trace.jsonl",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(
+            cli.trace_output.as_deref(),
+            Some(std::path::Path::new("/tmp/trace.jsonl"))
+        );
     }
 }

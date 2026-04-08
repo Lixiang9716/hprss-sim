@@ -170,3 +170,41 @@ fn four_cpu_cores_can_run_four_jobs_in_parallel() {
     assert_eq!(engine.metrics().completed_jobs, 4);
     assert_eq!(engine.metrics().deadline_misses, 0);
 }
+
+#[test]
+fn trace_output_writes_jsonl_file() {
+    let mut engine = SimEngine::new(
+        SimConfig {
+            duration_ns: 1_000_000,
+            seed: 31,
+        },
+        vec![cpu_device(0)],
+        vec![],
+        vec![],
+    );
+    engine.register_tasks(vec![Task {
+        id: TaskId(0),
+        name: "trace-task".to_string(),
+        priority: 1,
+        arrival: ArrivalModel::Periodic { period: 1_000_000 },
+        deadline: 1_000_000,
+        criticality: CriticalityLevel::Lo,
+        exec_times: vec![(
+            DeviceType::Cpu,
+            ExecutionTimeModel::Deterministic { wcet: 10_000 },
+        )],
+        affinity: vec![DeviceType::Cpu],
+        data_size: 0,
+    }]);
+    engine.schedule_initial_arrivals();
+    let mut scheduler = FixedPriorityScheduler;
+    engine.run(&mut scheduler);
+
+    let output = std::env::temp_dir().join("hprss_trace_test.jsonl");
+    engine
+        .write_trace_jsonl(&output)
+        .expect("trace file should be written");
+    let content = std::fs::read_to_string(&output).expect("trace output should be readable");
+    assert!(content.contains("\"event\":\"job_complete\""));
+    let _ = std::fs::remove_file(output);
+}

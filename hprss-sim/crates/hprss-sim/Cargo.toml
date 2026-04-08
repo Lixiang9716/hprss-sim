@@ -16,4 +16,5 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 hprss-engine = { workspace = true }
 hprss-platform = { workspace = true }
 hprss-scheduler = { workspace = true }
+hprss-types = { workspace = true }
 hprss-workload = { workspace = true }

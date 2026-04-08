@@ -1,6 +1,7 @@
 //! The DES simulation engine.
 
 use std::collections::BinaryHeap;
+use std::path::Path;
 
 use hprss_metrics::MetricsCollector;
 use hprss_types::{
@@ -248,7 +249,8 @@ impl SimEngine {
                             job_id,
                             job.absolute_deadline
                         );
-                        self.metrics.record_deadline_miss(job_id, self.now);
+                        self.metrics
+                            .record_deadline_miss(job_id, job.task_id, self.now);
                         if let Some(job_mut) = self.get_job_mut(job_id) {
                             job_mut.transition(JobState::DeadlineMissed);
                             job_mut.exec_start_time = None;
@@ -350,9 +352,12 @@ impl SimEngine {
             if let Some(actual_exec_ns) = job.actual_exec_ns {
                 job.executed_ns = actual_exec_ns;
             }
+            let task_id = job.task_id;
+            let release_time = job.release_time;
             job.exec_start_time = None;
             job.transition(JobState::Completed);
-            self.metrics.record_completion(job_id, now);
+            self.metrics
+                .record_completion(job_id, task_id, release_time, now);
         } else {
             return;
         }
@@ -986,6 +991,10 @@ impl SimEngine {
             schedulable: m.is_schedulable(),
             events_processed: self.events_processed,
         }
+    }
+
+    pub fn write_trace_jsonl(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+        self.metrics.write_jsonl(path)
     }
 }
 

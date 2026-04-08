@@ -489,6 +489,7 @@ dependencies = [
  "hprss-engine",
  "hprss-platform",
  "hprss-scheduler",
+ "hprss-types",
  "hprss-workload",
  "rayon",
  "serde",

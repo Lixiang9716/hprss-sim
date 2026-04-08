@@ -3,7 +3,7 @@
 //! Tracks: schedulability ratio, deadline miss rate, response time,
 //! device utilization, end-to-end latency.
 
-use hprss_types::{JobId, Nanos};
+use hprss_types::{JobId, Nanos, TaskId, task::TaskChain};
 
 /// Collects simulation metrics
 #[derive(Debug, Default)]
@@ -18,13 +18,24 @@ pub struct MetricsCollector {
 #[derive(Debug, Clone)]
 pub struct CompletionRecord {
     pub job_id: JobId,
+    pub task_id: TaskId,
+    pub release_time: Nanos,
     pub completion_time: Nanos,
 }
 
 #[derive(Debug, Clone)]
 pub struct MissRecord {
     pub job_id: JobId,
+    pub task_id: TaskId,
     pub miss_time: Nanos,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct TraceRecord {
+    event: &'static str,
+    time: Nanos,
+    job_id: JobId,
+    task_id: TaskId,
 }
 
 impl MetricsCollector {
@@ -36,18 +47,27 @@ impl MetricsCollector {
         self.total_jobs += 1;
     }
 
-    pub fn record_completion(&mut self, job_id: JobId, time: Nanos) {
+    pub fn record_completion(
+        &mut self,
+        job_id: JobId,
+        task_id: TaskId,
+        release_time: Nanos,
+        time: Nanos,
+    ) {
         self.completed_jobs += 1;
         self.completions.push(CompletionRecord {
             job_id,
+            task_id,
+            release_time,
             completion_time: time,
         });
     }
 
-    pub fn record_deadline_miss(&mut self, job_id: JobId, time: Nanos) {
+    pub fn record_deadline_miss(&mut self, job_id: JobId, task_id: TaskId, time: Nanos) {
         self.deadline_misses += 1;
         self.misses.push(MissRecord {
             job_id,
+            task_id,
             miss_time: time,
         });
     }
@@ -65,6 +85,73 @@ impl MetricsCollector {
     pub fn is_schedulable(&self) -> bool {
         self.deadline_misses == 0
     }
+
+    /// Serialize completion/miss timeline into JSON-lines text.
+    pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
+        let mut rows = Vec::new();
+        for c in &self.completions {
+            rows.push(TraceRecord {
+                event: "job_complete",
+                time: c.completion_time,
+                job_id: c.job_id,
+                task_id: c.task_id,
+            });
+        }
+        for m in &self.misses {
+            rows.push(TraceRecord {
+                event: "deadline_miss",
+                time: m.miss_time,
+                job_id: m.job_id,
+                task_id: m.task_id,
+            });
+        }
+        rows.sort_by_key(|r| r.time);
+
+        let mut out = String::new();
+        for row in rows {
+            out.push_str(&serde_json::to_string(&row)?);
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    pub fn write_jsonl(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let text = self
+            .to_jsonl()
+            .map_err(|e| std::io::Error::other(format!("serialize trace jsonl: {e}")))?;
+        std::fs::write(path, text)
+    }
+}
+
+/// Compute max end-to-end reaction time for a task chain from completion records.
+pub fn max_chain_reaction_time(chain: &TaskChain, completions: &[CompletionRecord]) -> Option<Nanos> {
+    if chain.tasks.is_empty() {
+        return None;
+    }
+    let mut sorted = completions.to_vec();
+    sorted.sort_by_key(|c| c.completion_time);
+
+    let first_task = chain.tasks[0];
+    let mut max_rt = None::<Nanos>;
+    for start in sorted.iter().filter(|c| c.task_id == first_task) {
+        let mut current_time = start.completion_time;
+        let mut ok = true;
+        for task_id in chain.tasks.iter().skip(1) {
+            let next = sorted
+                .iter()
+                .find(|c| c.task_id == *task_id && c.completion_time >= current_time);
+            let Some(next) = next else {
+                ok = false;
+                break;
+            };
+            current_time = next.completion_time;
+        }
+        if ok {
+            let rt = current_time.saturating_sub(start.release_time);
+            max_rt = Some(max_rt.map_or(rt, |prev| prev.max(rt)));
+        }
+    }
+    max_rt
 }
 
 #[cfg(test)]
@@ -76,13 +163,56 @@ mod tests {
         let mut m = MetricsCollector::new();
         m.record_job_release();
         m.record_job_release();
-        m.record_completion(JobId(0), 100);
-        m.record_deadline_miss(JobId(1), 200);
+        m.record_completion(JobId(0), TaskId(0), 0, 100);
+        m.record_deadline_miss(JobId(1), TaskId(1), 200);
 
         assert_eq!(m.total_jobs, 2);
         assert_eq!(m.completed_jobs, 1);
         assert_eq!(m.deadline_misses, 1);
         assert!((m.miss_ratio() - 0.5).abs() < f64::EPSILON);
         assert!(!m.is_schedulable());
+    }
+
+    #[test]
+    fn trace_writer_outputs_jsonl() {
+        let mut m = MetricsCollector::new();
+        m.record_job_release();
+        m.record_completion(JobId(2), TaskId(9), 10, 100);
+        let out = m.to_jsonl().expect("jsonl should be created");
+        assert!(out.contains("\"event\":\"job_complete\""));
+        assert!(out.contains("\"task_id\":9"));
+    }
+
+    #[test]
+    fn task_chain_reaction_time_is_computed() {
+        let chain = TaskChain {
+            id: hprss_types::ChainId(1),
+            name: "pipeline".to_string(),
+            tasks: vec![TaskId(0), TaskId(1), TaskId(2)],
+            e2e_deadline: 1_000,
+            metric: hprss_types::task::E2EMetric::ReactionTime,
+        };
+        let completions = vec![
+            CompletionRecord {
+                job_id: JobId(0),
+                task_id: TaskId(0),
+                release_time: 100,
+                completion_time: 200,
+            },
+            CompletionRecord {
+                job_id: JobId(1),
+                task_id: TaskId(1),
+                release_time: 120,
+                completion_time: 260,
+            },
+            CompletionRecord {
+                job_id: JobId(2),
+                task_id: TaskId(2),
+                release_time: 140,
+                completion_time: 320,
+            },
+        ];
+        let rt = max_chain_reaction_time(&chain, &completions).expect("reaction should exist");
+        assert_eq!(rt, 220);
     }
 }
