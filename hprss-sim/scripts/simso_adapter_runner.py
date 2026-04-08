@@ -31,14 +31,42 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def _require_field(obj: dict[str, Any], key: str) -> Any:
+    if key not in obj:
+        raise ValueError(f"missing required field: {key}")
+    return obj[key]
+
+
+def _require_str(obj: dict[str, Any], key: str) -> str:
+    value = _require_field(obj, key)
+    if not isinstance(value, str):
+        raise ValueError(f"field `{key}` must be string")
+    return value
+
+
+def _require_int(obj: dict[str, Any], key: str) -> int:
+    value = _require_field(obj, key)
+    if type(value) is not int:
+        raise ValueError(f"field `{key}` must be integer")
+    return value
+
+
+def _require_list(obj: dict[str, Any], key: str) -> list[Any]:
+    value = _require_field(obj, key)
+    if not isinstance(value, list):
+        raise ValueError(f"field `{key}` must be list")
+    return value
+
+
 def _load_input() -> dict[str, Any]:
     payload = json.load(sys.stdin)
     _require(isinstance(payload, dict), "input must be a JSON object")
-    _require(payload.get("adapter_contract") == ADAPTER_CONTRACT, "adapter_contract mismatch")
-    _require(isinstance(payload.get("workload"), str), "workload must be string")
-    _require(isinstance(payload.get("scheduler"), str), "scheduler must be string")
-    _require(isinstance(payload.get("horizon_ns"), int), "horizon_ns must be int")
-    _require(isinstance(payload.get("tasks"), list), "tasks must be list")
+    adapter_contract = _require_str(payload, "adapter_contract")
+    _require(adapter_contract == ADAPTER_CONTRACT, "adapter_contract mismatch")
+    _require_str(payload, "workload")
+    _require_str(payload, "scheduler")
+    _require_int(payload, "horizon_ns")
+    _require_list(payload, "tasks")
     return payload
 
 
@@ -48,10 +76,10 @@ def _coerce_tasks(raw_tasks: list[dict[str, Any]]) -> list[TaskSpec]:
         _require(isinstance(item, dict), "task must be object")
         tasks.append(
             TaskSpec(
-                period_ns=int(item["period_ns"]),
-                deadline_ns=int(item["deadline_ns"]),
-                wcet_ns=int(item["wcet_ns"]),
-                priority=int(item["priority"]),
+                period_ns=_require_int(item, "period_ns"),
+                deadline_ns=_require_int(item, "deadline_ns"),
+                wcet_ns=_require_int(item, "wcet_ns"),
+                priority=_require_int(item, "priority"),
             )
         )
     return tasks
@@ -68,8 +96,8 @@ def _run_simso(payload: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
     tasks = _coerce_tasks(payload["tasks"])
-    horizon_ns = int(payload["horizon_ns"])
-    scheduler = str(payload["scheduler"]).strip().lower()
+    horizon_ns = _require_int(payload, "horizon_ns")
+    scheduler = _require_str(payload, "scheduler").strip().lower()
     _require(scheduler in {"fp", "edf"}, "scheduler must be fp or edf")
 
     config = Configuration()

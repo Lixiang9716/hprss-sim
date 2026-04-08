@@ -1,13 +1,15 @@
-use std::path::PathBuf;
 use std::process::Command;
+use std::{path::PathBuf, time::Duration};
 
 use hprss_validate::{
-    CpuOnlySchedulerConfig, SimsoAdapterConfig, default_simso_adapter_runner,
+    CpuOnlySchedulerConfig, SimsoAdapterConfig, SimsoAdapterError, default_simso_adapter_runner,
     normalize_simso_output, run_level3_simso_differential, selected_cpu_only_workloads,
 };
 
-fn fixture_runner() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/simso_adapter_fixture.py")
+fn fixture_runner(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
 }
 
 #[test]
@@ -28,8 +30,7 @@ fn adapter_invocation_contract_and_mapping_are_wired() {
         .into_iter()
         .next()
         .expect("selected workloads should not be empty");
-    let config = SimsoAdapterConfig::for_runner(fixture_runner())
-        .with_fixture_mode("legacy_sentinel")
+    let config = SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_legacy_sentinel.py"))
         .with_tolerance(1e-12);
 
     let report =
@@ -48,9 +49,9 @@ fn comparison_matches_when_adapter_output_aligns() {
         .into_iter()
         .find(|w| w.name == "single-task-control")
         .expect("single-task-control fixture must exist");
-    let config = SimsoAdapterConfig::for_runner(fixture_runner())
-        .with_fixture_mode("single_task_match")
-        .with_tolerance(1e-12);
+    let config =
+        SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_single_task_match.py"))
+            .with_tolerance(1e-12);
 
     let report =
         run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
@@ -91,4 +92,99 @@ fn real_simso_adapter_smoke_when_available() {
     assert_eq!(report.simso.deadline_misses, 0);
     assert_eq!(report.simso.completion_count, 10);
     assert!(report.outputs_match);
+}
+
+#[test]
+fn adapter_reports_non_zero_exit() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .next()
+        .expect("selected workloads should not be empty");
+    let config = SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_nonzero.py"));
+    let err =
+        run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
+            .expect_err("non-zero adapter should fail");
+    assert!(matches!(
+        err,
+        SimsoAdapterError::RunnerFailed { code: 9, .. }
+    ));
+}
+
+#[test]
+fn adapter_reports_malformed_json() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .next()
+        .expect("selected workloads should not be empty");
+    let config = SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_malformed_json.py"));
+    let err =
+        run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
+            .expect_err("malformed JSON should fail");
+    assert!(matches!(err, SimsoAdapterError::ParseOutput(_)));
+}
+
+#[test]
+fn adapter_reports_missing_or_invalid_required_fields() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .next()
+        .expect("selected workloads should not be empty");
+
+    let missing_config =
+        SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_missing_field.py"));
+    let missing_err = run_level3_simso_differential(
+        &workload,
+        CpuOnlySchedulerConfig::FixedPriority,
+        &missing_config,
+    )
+    .expect_err("missing required field should fail");
+    assert!(matches!(
+        missing_err,
+        SimsoAdapterError::MissingField {
+            field: "deadline_misses"
+        }
+    ));
+
+    let invalid_config =
+        SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_invalid_field.py"));
+    let invalid_err = run_level3_simso_differential(
+        &workload,
+        CpuOnlySchedulerConfig::FixedPriority,
+        &invalid_config,
+    )
+    .expect_err("invalid field type should fail");
+    assert!(matches!(
+        invalid_err,
+        SimsoAdapterError::InvalidField {
+            field: "completion_count",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn adapter_reports_missing_runner_path() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .next()
+        .expect("selected workloads should not be empty");
+    let config = SimsoAdapterConfig::for_runner(fixture_runner("does_not_exist.py"));
+    let err =
+        run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
+            .expect_err("missing runner path should fail");
+    assert!(matches!(err, SimsoAdapterError::RunnerMissing { .. }));
+}
+
+#[test]
+fn adapter_reports_timeout() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .next()
+        .expect("selected workloads should not be empty");
+    let config = SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_sleep.py"))
+        .with_timeout(Duration::from_millis(30));
+    let err =
+        run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
+            .expect_err("hung adapter should timeout");
+    assert!(matches!(err, SimsoAdapterError::RunnerTimeout { .. }));
 }

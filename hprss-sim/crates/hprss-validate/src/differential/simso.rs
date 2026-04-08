@@ -1,7 +1,9 @@
 use std::{
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -16,6 +18,7 @@ use super::cpu_only::{
 pub const LEVEL3_SCOPE: &str = "strict CPU-only SimSo differential validation";
 const ADAPTER_CONTRACT: &str = "hprss-simso-v1";
 const DEFAULT_MISS_RATIO_TOLERANCE: f64 = 1e-12;
+const DEFAULT_ADAPTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SimsoRunSummary {
@@ -40,7 +43,7 @@ pub struct SimsoAdapterConfig {
     pub runner: PathBuf,
     pub python_bin: String,
     pub miss_ratio_tolerance: f64,
-    fixture_mode: Option<String>,
+    pub adapter_timeout: Duration,
 }
 
 impl Default for SimsoAdapterConfig {
@@ -49,7 +52,7 @@ impl Default for SimsoAdapterConfig {
             runner: default_simso_adapter_runner(),
             python_bin: "python3".to_string(),
             miss_ratio_tolerance: DEFAULT_MISS_RATIO_TOLERANCE,
-            fixture_mode: None,
+            adapter_timeout: DEFAULT_ADAPTER_TIMEOUT,
         }
     }
 }
@@ -72,8 +75,8 @@ impl SimsoAdapterConfig {
         self
     }
 
-    pub fn with_fixture_mode(mut self, mode: impl Into<String>) -> Self {
-        self.fixture_mode = Some(mode.into());
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.adapter_timeout = timeout;
         self
     }
 }
@@ -88,6 +91,8 @@ pub enum SimsoAdapterError {
     RunnerIo(std::io::Error),
     #[error("failed to write adapter input to stdin: {0}")]
     StdinWrite(std::io::Error),
+    #[error("adapter runner timed out after {timeout_ms} ms")]
+    RunnerTimeout { timeout_ms: u64 },
     #[error("adapter runner exited with code {code}: {stderr}")]
     RunnerFailed { code: i32, stderr: String },
     #[error("adapter returned invalid JSON: {0}")]
@@ -223,31 +228,50 @@ fn execute_adapter(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(mode) = &config.fixture_mode {
-        command.env("HPRSS_SIMSO_FIXTURE_MODE", mode);
-    }
 
     let mut child = command.spawn().map_err(SimsoAdapterError::RunnerIo)?;
-    {
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| SimsoAdapterError::StdinWrite(std::io::Error::other("missing stdin")))?;
-        stdin
-            .write_all(input_json.as_bytes())
-            .map_err(SimsoAdapterError::StdinWrite)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| SimsoAdapterError::StdinWrite(std::io::Error::other("missing stdin")))?;
+    stdin
+        .write_all(input_json.as_bytes())
+        .map_err(SimsoAdapterError::StdinWrite)?;
+    drop(stdin);
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(SimsoAdapterError::RunnerIo)? {
+            break status;
+        }
+        if start.elapsed() > config.adapter_timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SimsoAdapterError::RunnerTimeout {
+                timeout_ms: config.adapter_timeout.as_millis() as u64,
+            });
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)
+            .map_err(SimsoAdapterError::RunnerIo)?;
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)
+            .map_err(SimsoAdapterError::RunnerIo)?;
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(SimsoAdapterError::RunnerIo)?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(SimsoAdapterError::RunnerFailed {
-            code: output.status.code().unwrap_or(-1),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            code: status.code().unwrap_or(-1),
+            stderr: stderr.trim().to_string(),
         });
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(stdout.trim().to_string())
 }
 
 fn to_adapter_task(task_id: u32, task: &CpuOnlyTask) -> SimsoAdapterTask {
