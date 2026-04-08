@@ -493,6 +493,7 @@ dependencies = [
  "hprss-workload",
  "rayon",
  "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

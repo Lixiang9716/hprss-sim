@@ -214,25 +214,8 @@ fn run_timestamp() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
-fn format_per_device_utilization_csv(values: &[(u32, u64, f64)]) -> String {
-    let items = values
-        .iter()
-        .map(|v| {
-            format!(
-                "{{\"device_id\":{},\"busy_ns\":{},\"utilization\":{:.6}}}",
-                v.0, v.1, v.2
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("[{items}]")
-}
-
-fn format_blocking_breakdown_csv(transfer_ns: u64, migration_ns: u64, bus_wait_ns: u64) -> String {
-    format!(
-        "{{\"transfer_ns\":{},\"migration_ns\":{},\"bus_wait_ns\":{}}}",
-        transfer_ns, migration_ns, bus_wait_ns
-    )
+fn serialize_csv_json<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
 /// Run a single simulation and return the result with timing.
@@ -401,18 +384,9 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
                     config_hash: run_config_hash.clone(),
                     git_commit: run_git_commit.clone(),
                     timestamp: run_timestamp.clone(),
-                    per_device_utilization: format_per_device_utilization_csv(
-                        &sim.per_device_utilization
-                            .iter()
-                            .map(|u| (u.device_id.0, u.busy_ns, u.utilization))
-                            .collect::<Vec<_>>(),
-                    ),
+                    per_device_utilization: serialize_csv_json(&sim.per_device_utilization),
                     transfer_overhead: sim.transfer_overhead,
-                    blocking_breakdown: format_blocking_breakdown_csv(
-                        sim.blocking_breakdown.transfer_ns,
-                        sim.blocking_breakdown.migration_ns,
-                        sim.blocking_breakdown.bus_wait_ns,
-                    ),
+                    blocking_breakdown: serialize_csv_json(&sim.blocking_breakdown),
                     worst_response_time: sim.worst_response_time,
                     preemption_count: sim.preemption_count,
                     migration_count: sim.migration_count,
@@ -604,5 +578,47 @@ mod tests {
         assert!(!hash.is_empty());
         assert!(!git_commit().is_empty());
         assert!(!run_timestamp().is_empty());
+    }
+
+    #[test]
+    fn metric_json_columns_are_round_trip_json_with_precision() {
+        #[derive(serde::Serialize)]
+        struct UtilRow {
+            device_id: u32,
+            busy_ns: u64,
+            utilization: f64,
+        }
+        #[derive(serde::Serialize)]
+        struct BlockingRow {
+            transfer_ns: u64,
+            migration_ns: u64,
+            bus_wait_ns: u64,
+        }
+
+        let per_device = serialize_csv_json(&[UtilRow {
+            device_id: 7,
+            busy_ns: 500,
+            utilization: 1.0 / 3.0,
+        }]);
+        let parsed_per_device: serde_json::Value =
+            serde_json::from_str(&per_device).expect("must be valid json");
+        let utilization = parsed_per_device[0]["utilization"]
+            .as_f64()
+            .expect("utilization should be numeric");
+        assert!(
+            (utilization - (1.0 / 3.0)).abs() < 1e-12,
+            "serialization should preserve floating precision"
+        );
+
+        let blocking = serialize_csv_json(&BlockingRow {
+            transfer_ns: 120,
+            migration_ns: 30,
+            bus_wait_ns: 10,
+        });
+        let parsed_blocking: serde_json::Value =
+            serde_json::from_str(&blocking).expect("must be valid json");
+        assert_eq!(parsed_blocking["transfer_ns"].as_u64(), Some(120));
+        assert_eq!(parsed_blocking["migration_ns"].as_u64(), Some(30));
+        assert_eq!(parsed_blocking["bus_wait_ns"].as_u64(), Some(10));
     }
 }

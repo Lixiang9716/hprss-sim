@@ -1067,7 +1067,11 @@ impl SimEngine {
 }
 
 /// Aggregated result of a single simulation run.
+///
+/// This type is an internal workspace boundary (engine -> CLI/validation crates).
+/// We treat additive fields as the forward-compatible extension mechanism.
 #[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
 pub struct SimResult {
     pub total_jobs: u64,
     pub completed_jobs: u64,
@@ -1334,6 +1338,10 @@ mod tests {
             .transfer_mgr
             .on_transfer_complete(JobId(1), first[0].time);
         assert_eq!(follow_up.len(), 1);
+        let final_transfer = engine
+            .transfer_mgr
+            .on_transfer_complete(JobId(2), follow_up[0].time);
+        assert!(final_transfer.is_empty());
 
         let summary = engine.summary();
         assert_eq!(summary.worst_response_time, 200);
