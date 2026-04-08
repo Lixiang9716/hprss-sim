@@ -11,8 +11,10 @@ use hprss_scheduler::{
     CpEdfScheduler, EdfScheduler, EdfVdScheduler, FederatedScheduler, FixedPriorityScheduler,
     HeftScheduler, LlfScheduler,
 };
-use hprss_types::Scheduler;
-use hprss_workload::{WorkloadConfig, generate_taskset};
+use hprss_types::{EventKind, Scheduler, TaskId};
+use hprss_workload::{
+    ReplayWorkload, WorkloadConfig, generate_taskset, load_replay_csv, load_replay_json,
+};
 use rayon::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -50,6 +52,32 @@ struct Cli {
     /// Write simulation trace as JSON-lines
     #[arg(long, global = true)]
     trace_output: Option<PathBuf>,
+
+    /// Replay workload JSON file (replaces synthetic generation)
+    #[arg(
+        long,
+        global = true,
+        conflicts_with_all = ["replay_csv_tasks", "replay_csv_jobs"]
+    )]
+    replay_json: Option<PathBuf>,
+
+    /// Replay workload task CSV file
+    #[arg(
+        long,
+        global = true,
+        requires = "replay_csv_jobs",
+        conflicts_with = "replay_json"
+    )]
+    replay_csv_tasks: Option<PathBuf>,
+
+    /// Replay workload job CSV file
+    #[arg(
+        long,
+        global = true,
+        requires = "replay_csv_tasks",
+        conflicts_with = "replay_json"
+    )]
+    replay_csv_jobs: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -231,10 +259,14 @@ fn serialize_csv_json<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// Run a single simulation and return the result with timing.
+enum WorkloadInput {
+    Synthetic { num_tasks: usize, utilization: f64 },
+    Replay(ReplayWorkload),
+}
+
 fn run_single(
     platform: &PlatformConfig,
-    num_tasks: usize,
-    utilization: f64,
+    workload: &WorkloadInput,
     seed: u64,
     scheduler_kind: SchedulerKind,
     trace_output: Option<&std::path::Path>,
@@ -242,14 +274,21 @@ fn run_single(
     let devices = platform.build_devices()?;
     let interconnects = platform.build_interconnects(&devices)?;
     let buses = platform.build_buses()?;
-
-    let workload_cfg = WorkloadConfig {
-        num_tasks,
-        total_utilization: utilization,
-        seed,
-        ..WorkloadConfig::default()
+    let synthetic_tasks = match workload {
+        WorkloadInput::Synthetic {
+            num_tasks,
+            utilization,
+        } => {
+            let workload_cfg = WorkloadConfig {
+                num_tasks: *num_tasks,
+                total_utilization: *utilization,
+                seed,
+                ..WorkloadConfig::default()
+            };
+            Some(generate_taskset(&workload_cfg, &devices))
+        }
+        WorkloadInput::Replay(_) => None,
     };
-    let tasks = generate_taskset(&workload_cfg, &devices);
 
     let mut engine = SimEngine::new(
         SimConfig {
@@ -260,8 +299,48 @@ fn run_single(
         interconnects,
         buses,
     );
-    engine.register_tasks(tasks);
-    engine.schedule_initial_arrivals();
+    match workload {
+        WorkloadInput::Synthetic { .. } => {
+            if let Some(tasks) = synthetic_tasks {
+                engine.register_tasks(tasks);
+            }
+            engine.schedule_initial_arrivals();
+        }
+        WorkloadInput::Replay(replay) => {
+            let replay_tasks = replay.to_tasks();
+            let task_deadline: std::collections::HashMap<TaskId, u64> = replay_tasks
+                .iter()
+                .map(|task| (task.id, task.deadline))
+                .collect();
+            let task_priority: std::collections::HashMap<TaskId, u32> = replay_tasks
+                .iter()
+                .map(|task| (task.id, task.priority))
+                .collect();
+
+            engine.register_tasks(replay_tasks);
+
+            for job in replay.jobs() {
+                let task_id = TaskId(job.task_id);
+                let priority = *task_priority
+                    .get(&task_id)
+                    .with_context(|| format!("replay job references unknown task {}", task_id.0))?;
+                let relative_deadline = *task_deadline
+                    .get(&task_id)
+                    .with_context(|| format!("replay task {} missing deadline", task_id.0))?;
+                let absolute_deadline = job
+                    .absolute_deadline_ns
+                    .unwrap_or_else(|| job.release_ns.saturating_add(relative_deadline));
+                let job_id = engine.create_job(
+                    task_id,
+                    job.release_ns,
+                    absolute_deadline,
+                    job.actual_exec_ns,
+                    priority,
+                );
+                engine.schedule_event(job.release_ns, EventKind::TaskArrival { task_id, job_id });
+            }
+        }
+    }
 
     let mut scheduler = build_scheduler(scheduler_kind);
     let t0 = Instant::now();
@@ -286,10 +365,10 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
     })?;
 
     let seed = cli.seed.unwrap_or(platform.simulation.seed);
+    let workload = load_workload_input(cli)?;
     let (result, wall_us) = run_single(
         &platform,
-        cli.tasks,
-        cli.utilization,
+        &workload,
         seed,
         cli.scheduler,
         cli.trace_output.as_deref(),
@@ -316,6 +395,11 @@ fn cmd_run(cli: &Cli) -> anyhow::Result<()> {
 }
 
 fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
+    if cli.replay_json.is_some() || cli.replay_csv_tasks.is_some() || cli.replay_csv_jobs.is_some()
+    {
+        anyhow::bail!("replay workload mode is only supported for single-run command");
+    }
+
     let platform_path = cli.platform.as_ref().context("--platform is required")?;
     let platform = PlatformConfig::load(platform_path).with_context(|| {
         format!(
@@ -374,7 +458,11 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
     let rows: Vec<SweepRow> = configs
         .par_iter()
         .filter_map(|&(utilization, task_count, seed, scheduler)| {
-            let result = run_single(&platform, task_count, utilization, seed, scheduler, None);
+            let workload = WorkloadInput::Synthetic {
+                num_tasks: task_count,
+                utilization,
+            };
+            let result = run_single(&platform, &workload, seed, scheduler, None);
             let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if done.is_multiple_of(10) || done == total {
                 eprint!("\r  [{done}/{total}]");
@@ -443,6 +531,30 @@ fn cmd_sweep(cli: &Cli, sweep: &SweepArgs) -> anyhow::Result<()> {
     println!("  output      : {}", sweep.output.display());
 
     Ok(())
+}
+
+fn load_workload_input(cli: &Cli) -> anyhow::Result<WorkloadInput> {
+    if let Some(path) = &cli.replay_json {
+        let replay = load_replay_json(path)
+            .with_context(|| format!("failed to load replay json: {}", path.display()))?;
+        return Ok(WorkloadInput::Replay(replay));
+    }
+
+    if let (Some(tasks_path), Some(jobs_path)) = (&cli.replay_csv_tasks, &cli.replay_csv_jobs) {
+        let replay = load_replay_csv(tasks_path, jobs_path).with_context(|| {
+            format!(
+                "failed to load replay csv tasks={} jobs={}",
+                tasks_path.display(),
+                jobs_path.display()
+            )
+        })?;
+        return Ok(WorkloadInput::Replay(replay));
+    }
+
+    Ok(WorkloadInput::Synthetic {
+        num_tasks: cli.tasks,
+        utilization: cli.utilization,
+    })
 }
 
 fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
@@ -705,5 +817,60 @@ mod tests {
         assert_eq!(parsed_blocking["transfer_ns"].as_u64(), Some(120));
         assert_eq!(parsed_blocking["migration_ns"].as_u64(), Some(30));
         assert_eq!(parsed_blocking["bus_wait_ns"].as_u64(), Some(10));
+    }
+
+    #[test]
+    fn cli_accepts_replay_json_mode() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--replay-json",
+            "replay.json",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(
+            cli.replay_json.as_deref(),
+            Some(std::path::Path::new("replay.json"))
+        );
+        assert!(cli.replay_csv_tasks.is_none());
+        assert!(cli.replay_csv_jobs.is_none());
+    }
+
+    #[test]
+    fn cli_accepts_replay_csv_mode() {
+        let cli = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--replay-csv-tasks",
+            "tasks.csv",
+            "--replay-csv-jobs",
+            "jobs.csv",
+        ])
+        .expect("cli parsing should succeed");
+        assert_eq!(
+            cli.replay_csv_tasks.as_deref(),
+            Some(std::path::Path::new("tasks.csv"))
+        );
+        assert_eq!(
+            cli.replay_csv_jobs.as_deref(),
+            Some(std::path::Path::new("jobs.csv"))
+        );
+        assert!(cli.replay_json.is_none());
+    }
+
+    #[test]
+    fn cli_rejects_partial_replay_csv_mode() {
+        let err = Cli::try_parse_from([
+            "hprss-sim",
+            "--platform",
+            "configs/platform_ft2000_full.toml",
+            "--replay-csv-tasks",
+            "tasks.csv",
+        ])
+        .expect_err("cli parsing should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("--replay-csv-jobs"));
     }
 }

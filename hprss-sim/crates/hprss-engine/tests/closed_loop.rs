@@ -1,7 +1,8 @@
 use hprss_engine::engine::{SimConfig, SimEngine};
 use hprss_scheduler::FixedPriorityScheduler;
 use hprss_types::{
-    BusArbitration, CriticalityLevel, DeviceId, InterconnectConfig, JobId, SharedBusConfig, TaskId,
+    BusArbitration, CriticalityLevel, DeviceId, EventKind, InterconnectConfig, JobId,
+    SharedBusConfig, TaskId,
     device::{DeviceConfig, PreemptionModel},
     task::{ArrivalModel, DeviceType, ExecutionTimeModel, Task},
 };
@@ -220,4 +221,71 @@ fn trace_output_writes_jsonl_file() {
     let content = std::fs::read_to_string(&output).expect("trace output should be readable");
     assert!(content.contains("\"event\":\"job_complete\""));
     let _ = std::fs::remove_file(output);
+}
+
+#[test]
+fn replay_arrivals_are_deterministic_across_runs() {
+    fn run_once() -> (u64, u64, u64, u64) {
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 1_000_000,
+                seed: 41,
+            },
+            vec![cpu_device(0)],
+            vec![],
+            vec![],
+        );
+        engine.register_tasks(vec![Task {
+            id: TaskId(0),
+            name: "replay-cpu".to_string(),
+            priority: 1,
+            arrival: ArrivalModel::Aperiodic,
+            deadline: 120_000,
+            criticality: CriticalityLevel::Lo,
+            exec_times: vec![(
+                DeviceType::Cpu,
+                ExecutionTimeModel::Deterministic { wcet: 80_000 },
+            )],
+            affinity: vec![DeviceType::Cpu],
+            data_size: 0,
+        }]);
+
+        for (release_ns, absolute_deadline_ns, actual_exec_ns) in [
+            (0_u64, 120_000_u64, 60_000_u64),
+            (200_000_u64, 320_000_u64, 70_000_u64),
+            (400_000_u64, 520_000_u64, 65_000_u64),
+        ] {
+            let job_id = engine.create_job(
+                TaskId(0),
+                release_ns,
+                absolute_deadline_ns,
+                Some(actual_exec_ns),
+                1,
+            );
+            engine.schedule_event(
+                release_ns,
+                EventKind::TaskArrival {
+                    task_id: TaskId(0),
+                    job_id,
+                },
+            );
+        }
+
+        let mut scheduler = FixedPriorityScheduler;
+        engine.run(&mut scheduler);
+        let s = engine.summary();
+        (
+            s.total_jobs,
+            s.completed_jobs,
+            s.deadline_misses,
+            s.worst_response_time,
+        )
+    }
+
+    let first = run_once();
+    let second = run_once();
+    assert_eq!(first, second, "replay run must be deterministic");
+    assert_eq!(first.0, 3);
+    assert_eq!(first.1, 3);
+    assert_eq!(first.2, 0);
 }

@@ -5,6 +5,7 @@
 
 pub mod dag_generator;
 pub mod generator;
+pub mod replay;
 pub mod uunifast;
 
 pub use dag_generator::{
@@ -12,3 +13,7 @@ pub use dag_generator::{
     generate_layered_dag,
 };
 pub use generator::{WorkloadConfig, generate_taskset};
+pub use replay::{
+    ReplayJobSpec, ReplayTaskSpec, ReplayWorkload, ReplayWorkloadError, load_replay_csv,
+    load_replay_json,
+};

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Workload generation (UUniFast, DAG, trace replay)"
 
 [dependencies]
+csv = "1.4.0"
 hprss-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
