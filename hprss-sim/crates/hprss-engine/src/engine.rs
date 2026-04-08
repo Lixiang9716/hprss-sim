@@ -6,7 +6,7 @@ use std::path::Path;
 use hprss_metrics::{BlockingBreakdown, DeviceUtilization, MetricsCollector};
 use hprss_types::{
     Action, CriticalityLevel, DeviceId, Event, EventKind, InterconnectConfig, Job, JobId, JobState,
-    Nanos, Scheduler, SharedBusConfig, Task, TaskId,
+    Nanos, ReevaluationTrigger, Scheduler, SharedBusConfig, Task, TaskId,
     device::{DeviceConfig, PreemptionModel},
     task::{ArrivalModel, DagTask, DeviceType, ExecutionTimeModel},
 };
@@ -64,6 +64,10 @@ pub struct SimEngine {
     preemption_count: u64,
     /// Number of migrations performed by the engine.
     migration_count: u64,
+    /// Last scheduled reevaluation event, tracked for deduplication/invalidation.
+    pending_reevaluation: Option<(u64, Nanos)>,
+    /// Monotonic generation for reevaluation events.
+    reevaluation_generation: u64,
 }
 
 impl SimEngine {
@@ -92,6 +96,8 @@ impl SimEngine {
             events_processed: 0,
             preemption_count: 0,
             migration_count: 0,
+            pending_reevaluation: None,
+            reevaluation_generation: 0,
         }
     }
 
@@ -180,6 +186,7 @@ impl SimEngine {
     pub fn run(&mut self, scheduler: &mut dyn Scheduler) {
         // Schedule simulation end
         self.schedule_event(self.config.duration_ns, EventKind::SimulationEnd);
+        self.schedule_next_periodic_reevaluation(scheduler);
 
         tracing::info!(
             "Simulation starting: duration={}ns, seed={}",
@@ -223,21 +230,37 @@ impl SimEngine {
                 }
                 EventKind::TaskArrival { task_id, job_id } => {
                     self.handle_task_arrival(task_id, job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::TaskArrival,
+                    );
                 }
                 EventKind::JobComplete {
                     job_id, device_id, ..
                 } => {
                     self.handle_job_complete(job_id, device_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::JobComplete,
+                    );
                 }
                 EventKind::PreemptionPoint {
                     device_id, job_id, ..
                 } => {
                     self.handle_preemption_point(device_id, job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::PreemptionPoint,
+                    );
                 }
                 EventKind::TransferComplete {
                     job_id, device_id, ..
                 } => {
                     self.handle_transfer_complete(job_id, device_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::TransferComplete,
+                    );
                 }
                 EventKind::EdgeTransferComplete {
                     edge_id, device_id, ..
@@ -282,6 +305,16 @@ impl SimEngine {
                 }
                 EventKind::BudgetOverrun { job_id, .. } => {
                     self.handle_budget_overrun(job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::CriticalityChange,
+                    );
+                }
+                EventKind::SchedulerReevaluation {
+                    generation,
+                    trigger,
+                } => {
+                    self.handle_reevaluation(generation, trigger, scheduler);
                 }
             }
         }
@@ -548,6 +581,29 @@ impl SimEngine {
         };
         self.execute_actions(actions, false);
         self.drop_lo_critical_jobs();
+    }
+
+    fn handle_reevaluation(
+        &mut self,
+        generation: u64,
+        trigger: ReevaluationTrigger,
+        scheduler: &mut dyn Scheduler,
+    ) {
+        if self.pending_reevaluation != Some((generation, self.now)) {
+            return;
+        }
+        self.pending_reevaluation = None;
+
+        let actions = {
+            self.device_mgr
+                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+            let view = self
+                .device_mgr
+                .scheduler_view(self.now, self.criticality_level);
+            scheduler.on_reevaluation(trigger, &view)
+        };
+        self.execute_actions(actions, false);
+        self.schedule_next_periodic_reevaluation(scheduler);
     }
 
     fn execute_actions(&mut self, actions: Vec<Action>, at_preemption_point: bool) {
@@ -913,6 +969,49 @@ impl SimEngine {
         }
     }
 
+    fn schedule_triggered_reevaluation(
+        &mut self,
+        scheduler: &dyn Scheduler,
+        trigger: ReevaluationTrigger,
+    ) {
+        let Some(min_interval_ns) = scheduler.reevaluation_policy().triggered_min_interval() else {
+            return;
+        };
+        self.schedule_reevaluation_event(self.now.saturating_add(min_interval_ns.max(1)), trigger);
+    }
+
+    fn schedule_next_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
+        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
+            return;
+        };
+        self.schedule_reevaluation_event(
+            self.now.saturating_add(interval_ns.max(1)),
+            ReevaluationTrigger::Periodic,
+        );
+    }
+
+    fn schedule_reevaluation_event(&mut self, time: Nanos, trigger: ReevaluationTrigger) {
+        if time > self.config.duration_ns {
+            return;
+        }
+        if let Some((_, pending_time)) = self.pending_reevaluation
+            && pending_time <= time
+        {
+            return;
+        }
+
+        self.reevaluation_generation = self.reevaluation_generation.saturating_add(1);
+        let generation = self.reevaluation_generation;
+        self.pending_reevaluation = Some((generation, time));
+        self.schedule_event(
+            time,
+            EventKind::SchedulerReevaluation {
+                generation,
+                trigger,
+            },
+        );
+    }
+
     fn record_running_elapsed(&mut self, job_id: JobId, device_id: DeviceId) {
         let speed_factor = self.device_mgr.device(device_id).speed_factor;
         let now = self.now;
@@ -987,6 +1086,7 @@ impl SimEngine {
             | EventKind::BudgetOverrun { job_id, .. } => Some(*job_id),
             EventKind::TaskArrival { .. }
             | EventKind::BusArbitration { .. }
+            | EventKind::SchedulerReevaluation { .. }
             | EventKind::SimulationEnd => None,
         }
     }

@@ -81,6 +81,62 @@ pub enum Action {
     NoOp,
 }
 
+/// What causes a scheduler reevaluation callback to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReevaluationTrigger {
+    /// Periodic scheduler tick.
+    Periodic,
+    /// Reevaluation requested after a task/job arrival-like event.
+    TaskArrival,
+    /// Reevaluation requested after a job completion.
+    JobComplete,
+    /// Reevaluation requested after a preemption-point callback.
+    PreemptionPoint,
+    /// Reevaluation requested after a transfer completion.
+    TransferComplete,
+    /// Reevaluation requested after a mixed-criticality mode switch.
+    CriticalityChange,
+}
+
+/// Scheduler policy that controls reevaluation callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReevaluationPolicy {
+    /// Reevaluation callbacks are disabled.
+    Disabled,
+    /// Fixed periodic reevaluation tick.
+    Periodic { interval_ns: Nanos },
+    /// Event-triggered reevaluation with debounce interval.
+    Triggered { min_interval_ns: Nanos },
+    /// Support both periodic and event-triggered reevaluation.
+    Hybrid {
+        interval_ns: Nanos,
+        min_interval_ns: Nanos,
+    },
+}
+
+impl ReevaluationPolicy {
+    pub fn periodic_interval(self) -> Option<Nanos> {
+        match self {
+            Self::Periodic { interval_ns } | Self::Hybrid { interval_ns, .. }
+                if interval_ns > 0 =>
+            {
+                Some(interval_ns)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn triggered_min_interval(self) -> Option<Nanos> {
+        match self {
+            Self::Triggered { min_interval_ns }
+            | Self::Hybrid {
+                min_interval_ns, ..
+            } if min_interval_ns > 0 => Some(min_interval_ns),
+            _ => None,
+        }
+    }
+}
+
 /// The core scheduler interface.
 ///
 /// Implementations must be deterministic given the same SchedulerView.
@@ -115,4 +171,22 @@ pub trait Scheduler: Send {
         trigger_job: &Job,
         view: &SchedulerView<'_>,
     ) -> Vec<Action>;
+
+    /// Reevaluation policy used by the engine to safely schedule callbacks.
+    ///
+    /// Default is disabled for backward compatibility.
+    fn reevaluation_policy(&self) -> ReevaluationPolicy {
+        ReevaluationPolicy::Disabled
+    }
+
+    /// Callback for periodic/event-triggered reevaluation.
+    ///
+    /// Default is no-op for backward compatibility.
+    fn on_reevaluation(
+        &mut self,
+        _trigger: ReevaluationTrigger,
+        _view: &SchedulerView<'_>,
+    ) -> Vec<Action> {
+        vec![Action::NoOp]
+    }
 }

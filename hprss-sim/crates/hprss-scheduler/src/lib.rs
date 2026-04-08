@@ -160,7 +160,7 @@ impl Scheduler for FixedPriorityScheduler {
 mod tests {
     use super::*;
     use hprss_types::{
-        DeviceId, JobId, TaskId,
+        DeviceId, JobId, ReevaluationPolicy, TaskId,
         device::{DeviceConfig, PreemptionModel},
         scheduler::RunningJobInfo,
         task::{ArrivalModel, CriticalityLevel, DeviceType, ExecutionTimeModel, Task},
@@ -176,6 +176,22 @@ mod tests {
     fn edf_scheduler_name() {
         let sched = crate::edf::EdfScheduler;
         assert_eq!(sched.name(), "EDF-Het");
+    }
+
+    #[test]
+    fn built_in_schedulers_keep_reevaluation_disabled_by_default() {
+        assert_eq!(
+            FixedPriorityScheduler.reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::edf::EdfScheduler.reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::heft::HeftScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
     }
 
     #[test]
