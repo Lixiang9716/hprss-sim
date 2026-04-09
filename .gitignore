@@ -9,3 +9,4 @@ borrow2
 borrow3
 .worktrees/
 __pycache__/
+.graphify_uncached.txt
