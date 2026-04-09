@@ -10,3 +10,7 @@ borrow3
 .worktrees/
 __pycache__/
 .graphify_uncached.txt
+.node_ids.json
+graphify-out/
+hprss-sim/graphify-out/
+hprss-sim/crates/graphify-out/
