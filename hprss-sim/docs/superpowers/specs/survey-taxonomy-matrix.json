@@ -1,0 +1,223 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Survey taxonomy to implementation mapping; CI guard for scheduler/analysis export drift",
+  "status_definitions": {
+    "implemented": "Backed by current executable implementation/export",
+    "partial": "Present but scoped/scaffolded versus target survey fidelity",
+    "missing": "Known taxonomy class with no mapped implementation",
+    "unsupported": "Explicitly out-of-scope class for current repository baseline"
+  },
+  "source_of_truth": {
+    "scheduler_exports": "crates/hprss-sim/src/scheduler_catalog.rs",
+    "analysis_exports": "crates/hprss-sim/src/main.rs (AnalysisMode::key)",
+    "catalog_reference": "docs/superpowers/specs/2026-04-09-all-paper-algorithm-catalog.json"
+  },
+  "classes": [
+    {
+      "class_id": "fixed-priority",
+      "class_name": "Fixed-priority scheduling family",
+      "class_status": "implemented",
+      "scheduler_mappings": [
+        {
+          "key": "fp",
+          "label": "FP-Het",
+          "implementation_status": "implemented",
+          "notes": "Baseline fixed-priority heterogeneous scheduling"
+        },
+        {
+          "key": "federated",
+          "label": "Federated",
+          "implementation_status": "implemented",
+          "notes": "Federated partitioned scheduling"
+        },
+        {
+          "key": "gang",
+          "label": "Gang",
+          "implementation_status": "implemented",
+          "notes": "Gang scheduling policy"
+        }
+      ],
+      "analysis_mappings": []
+    },
+    {
+      "class_id": "deadline-driven",
+      "class_name": "Deadline-driven scheduling family",
+      "class_status": "implemented",
+      "scheduler_mappings": [
+        {
+          "key": "edf",
+          "label": "EDF-Het",
+          "implementation_status": "implemented",
+          "notes": "Earliest-deadline-first heterogeneous policy"
+        },
+        {
+          "key": "edfvd",
+          "label": "EDF-VD-Het",
+          "implementation_status": "implemented",
+          "notes": "EDF-VD variant"
+        },
+        {
+          "key": "global-edf",
+          "label": "Global-EDF",
+          "implementation_status": "implemented",
+          "notes": "Global EDF policy"
+        }
+      ],
+      "analysis_mappings": []
+    },
+    {
+      "class_id": "laxity-driven",
+      "class_name": "Laxity-driven scheduling family",
+      "class_status": "implemented",
+      "scheduler_mappings": [
+        {
+          "key": "llf",
+          "label": "LLF-Het",
+          "implementation_status": "implemented",
+          "notes": "Least-laxity-first policy"
+        }
+      ],
+      "analysis_mappings": []
+    },
+    {
+      "class_id": "dag-aware",
+      "class_name": "DAG-aware scheduling family",
+      "class_status": "implemented",
+      "scheduler_mappings": [
+        {
+          "key": "heft",
+          "label": "HEFT",
+          "implementation_status": "implemented",
+          "notes": "HEFT-style DAG scheduling"
+        },
+        {
+          "key": "cpedf",
+          "label": "CP-EDF",
+          "implementation_status": "implemented",
+          "notes": "CP-EDF DAG-aware policy"
+        }
+      ],
+      "analysis_mappings": []
+    },
+    {
+      "class_id": "paper-heterogeneous",
+      "class_name": "Paper-specialized heterogeneous scheduler family",
+      "class_status": "implemented",
+      "scheduler_mappings": [
+        {
+          "key": "xsched",
+          "label": "XSched",
+          "implementation_status": "implemented",
+          "notes": "XSched policy baseline"
+        },
+        {
+          "key": "gcaps",
+          "label": "GCAPS",
+          "implementation_status": "implemented",
+          "notes": "GCAPS policy baseline"
+        },
+        {
+          "key": "gpreempt",
+          "label": "GPreempt",
+          "implementation_status": "implemented",
+          "notes": "GPU/heterogeneous preemption-aware policy"
+        },
+        {
+          "key": "rtgpu",
+          "label": "RTGPU",
+          "implementation_status": "implemented",
+          "notes": "RTGPU policy baseline"
+        },
+        {
+          "key": "match",
+          "label": "MATCH",
+          "implementation_status": "implemented",
+          "notes": "MATCH mapping/allocation scheduler"
+        },
+        {
+          "key": "gpu-preemptive-priority",
+          "label": "GPU-Preemptive-Priority",
+          "implementation_status": "implemented",
+          "notes": "Preemptive-priority GPU-focused policy"
+        }
+      ],
+      "analysis_mappings": []
+    },
+    {
+      "class_id": "analysis-catalog",
+      "class_name": "Analysis and validation modes",
+      "class_status": "partial",
+      "scheduler_mappings": [],
+      "analysis_mappings": [
+        {
+          "key": "none",
+          "label": "No extra analysis",
+          "implementation_status": "implemented",
+          "notes": "Control mode used in experiments"
+        },
+        {
+          "key": "rta-uniprocessor-fp",
+          "label": "Uniprocessor FP RTA",
+          "implementation_status": "implemented",
+          "notes": "Classical uniprocessor fixed-priority response-time analysis"
+        },
+        {
+          "key": "rta-uniform-global-fp-scaffold",
+          "label": "Uniform global FP RTA scaffold",
+          "implementation_status": "partial",
+          "notes": "Scaffold mode exported, fidelity work remains"
+        },
+        {
+          "key": "util-vectors",
+          "label": "Utilization vectors",
+          "implementation_status": "implemented",
+          "notes": "Utilization-vector analytic checks"
+        },
+        {
+          "key": "uniform-rta-global-fp",
+          "label": "Uniform global FP RTA",
+          "implementation_status": "implemented",
+          "notes": "Uniform multiprocessor global-FP response-time analysis"
+        },
+        {
+          "key": "conditional-dag",
+          "label": "Conditional DAG",
+          "implementation_status": "implemented",
+          "notes": "Conditional-DAG response-time analysis"
+        },
+        {
+          "key": "shape",
+          "label": "SHAPE",
+          "implementation_status": "implemented",
+          "notes": "SHAPE-style schedulability curve analysis"
+        },
+        {
+          "key": "openmp-wcrt",
+          "label": "OpenMP WCRT",
+          "implementation_status": "implemented",
+          "notes": "OpenMP region-level fixed-priority WCRT analysis"
+        },
+        {
+          "key": "simso-scope-extension",
+          "label": "SimSo scope extension",
+          "implementation_status": "implemented",
+          "notes": "Extended SimSo adapter scope tag for reproducibility metadata"
+        }
+      ]
+    },
+    {
+      "class_id": "explicit-unsupported-taxonomy",
+      "class_name": "Survey classes explicitly unsupported in current baseline",
+      "class_status": "unsupported",
+      "scheduler_mappings": [],
+      "analysis_mappings": [],
+      "unsupported_taxonomy_classes": [
+        "RL/learning-based online scheduling",
+        "Energy-aware DVFS co-optimization",
+        "Mixed-criticality mode-switch synthesis",
+        "Hardware-specific GPU preemption research policies",
+        "Cloud/cluster-scale multi-node scheduling"
+      ]
+    }
+  ]
+}

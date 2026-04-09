@@ -1,0 +1,45 @@
+{
+  "profile_name": "karami-rt-genai-profile-a",
+  "paper_reference": "RT_Heterogeneous_GenAI_2025_Karami",
+  "assumptions": [
+    {
+      "code": "karami-burst-window",
+      "detail": "Prompt bursts are represented by precomputed release offsets.",
+      "rationale": "Paper reports burst groups instead of a closed-form arrival model."
+    }
+  ],
+  "scenarios": [
+    {
+      "scenario_id": 3,
+      "name": "llm-prefill",
+      "priority": 2,
+      "criticality": "Hi",
+      "period_ns": 150000,
+      "relative_deadline_ns": 120000,
+      "release_offsets_ns": [180000, 0, 90000],
+      "affinity": ["Gpu", "Cpu"],
+      "execution_profiles": [
+        { "device_type": "Gpu", "wcet_ns": 65000 },
+        { "device_type": "Cpu", "wcet_ns": 110000 }
+      ],
+      "observed_exec_ns": 60000,
+      "data_size": 8192
+    },
+    {
+      "scenario_id": 1,
+      "name": "vision-encode",
+      "priority": 1,
+      "criticality": "Lo",
+      "period_ns": 80000,
+      "relative_deadline_ns": 60000,
+      "release_offsets_ns": [40000, 20000],
+      "affinity": ["Cpu", "Dsp"],
+      "execution_profiles": [
+        { "device_type": "Cpu", "wcet_ns": 45000 },
+        { "device_type": "Dsp", "wcet_ns": 25000 }
+      ],
+      "observed_exec_ns": 20000,
+      "data_size": 2048
+    }
+  ]
+}

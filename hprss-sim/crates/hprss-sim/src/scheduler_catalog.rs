@@ -1,7 +1,9 @@
 use clap::ValueEnum;
 use hprss_scheduler::{
     CpEdfScheduler, EdfScheduler, EdfVdScheduler, FederatedScheduler, FixedPriorityScheduler,
-    HeftScheduler, LlfScheduler,
+    GPreemptScheduler, GangScheduler, GcapsScheduler, GlobalEdfScheduler,
+    GpuPreemptivePriorityScheduler, HeftScheduler, LlfScheduler, MatchScheduler, RtgpuScheduler,
+    XSchedScheduler,
 };
 use hprss_types::Scheduler;
 
@@ -14,6 +16,14 @@ pub(crate) enum SchedulerKind {
     Heft,
     Cpedf,
     Federated,
+    GlobalEdf,
+    Gang,
+    Xsched,
+    Gcaps,
+    Gpreempt,
+    Rtgpu,
+    Match,
+    GpuPreemptivePriority,
 }
 
 pub(crate) fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String> {
@@ -27,6 +37,17 @@ pub(crate) fn parse_scheduler_list(s: &str) -> Result<Vec<SchedulerKind>, String
             "heft" => SchedulerKind::Heft,
             "cpedf" => SchedulerKind::Cpedf,
             "federated" => SchedulerKind::Federated,
+            "global-edf" | "global_edf" | "globaledf" | "gedf" => SchedulerKind::GlobalEdf,
+            "gang" => SchedulerKind::Gang,
+            "xsched" | "x-sched" => SchedulerKind::Xsched,
+            "gcaps" => SchedulerKind::Gcaps,
+            "gpreempt" | "g-preempt" => SchedulerKind::Gpreempt,
+            "rtgpu" | "rt-gpu" => SchedulerKind::Rtgpu,
+            "match" => SchedulerKind::Match,
+            "gpu-preemptive-priority"
+            | "gpu_preemptive_priority"
+            | "gpu-preempt-priority"
+            | "gpupp" => SchedulerKind::GpuPreemptivePriority,
             _ => return Err(format!("unknown scheduler: {token}")),
         };
         out.push(kind);
@@ -46,6 +67,14 @@ pub(crate) fn build_scheduler(kind: SchedulerKind) -> Box<dyn Scheduler> {
         SchedulerKind::Heft => Box::new(HeftScheduler::default()),
         SchedulerKind::Cpedf => Box::new(CpEdfScheduler::default()),
         SchedulerKind::Federated => Box::new(FederatedScheduler::default()),
+        SchedulerKind::GlobalEdf => Box::new(GlobalEdfScheduler),
+        SchedulerKind::Gang => Box::new(GangScheduler::default()),
+        SchedulerKind::Xsched => Box::new(XSchedScheduler),
+        SchedulerKind::Gcaps => Box::new(GcapsScheduler),
+        SchedulerKind::Gpreempt => Box::new(GPreemptScheduler),
+        SchedulerKind::Rtgpu => Box::new(RtgpuScheduler),
+        SchedulerKind::Match => Box::new(MatchScheduler::default()),
+        SchedulerKind::GpuPreemptivePriority => Box::new(GpuPreemptivePriorityScheduler),
     }
 }
 
@@ -58,5 +87,48 @@ pub(crate) fn scheduler_label(kind: SchedulerKind) -> &'static str {
         SchedulerKind::Heft => "HEFT",
         SchedulerKind::Cpedf => "CP-EDF",
         SchedulerKind::Federated => "Federated",
+        SchedulerKind::GlobalEdf => "Global-EDF",
+        SchedulerKind::Gang => "Gang",
+        SchedulerKind::Xsched => "XSched",
+        SchedulerKind::Gcaps => "GCAPS",
+        SchedulerKind::Gpreempt => "GPreempt",
+        SchedulerKind::Rtgpu => "RTGPU",
+        SchedulerKind::Match => "MATCH",
+        SchedulerKind::GpuPreemptivePriority => "GPU-Preemptive-Priority",
+    }
+}
+
+pub(crate) fn scheduler_key(kind: SchedulerKind) -> &'static str {
+    match kind {
+        SchedulerKind::Fp => "fp",
+        SchedulerKind::Edf => "edf",
+        SchedulerKind::Edfvd => "edfvd",
+        SchedulerKind::Llf => "llf",
+        SchedulerKind::Heft => "heft",
+        SchedulerKind::Cpedf => "cpedf",
+        SchedulerKind::Federated => "federated",
+        SchedulerKind::GlobalEdf => "global-edf",
+        SchedulerKind::Gang => "gang",
+        SchedulerKind::Xsched => "xsched",
+        SchedulerKind::Gcaps => "gcaps",
+        SchedulerKind::Gpreempt => "gpreempt",
+        SchedulerKind::Rtgpu => "rtgpu",
+        SchedulerKind::Match => "match",
+        SchedulerKind::GpuPreemptivePriority => "gpu-preemptive-priority",
+    }
+}
+
+pub(crate) fn scheduler_family(kind: SchedulerKind) -> &'static str {
+    match kind {
+        SchedulerKind::Fp | SchedulerKind::Federated | SchedulerKind::Gang => "fixed-priority",
+        SchedulerKind::Edf | SchedulerKind::Edfvd | SchedulerKind::GlobalEdf => "deadline-driven",
+        SchedulerKind::Llf => "laxity-driven",
+        SchedulerKind::Heft | SchedulerKind::Cpedf => "dag-aware",
+        SchedulerKind::Xsched
+        | SchedulerKind::Gcaps
+        | SchedulerKind::Gpreempt
+        | SchedulerKind::Rtgpu
+        | SchedulerKind::Match
+        | SchedulerKind::GpuPreemptivePriority => "paper-heterogeneous",
     }
 }

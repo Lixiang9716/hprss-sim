@@ -16,7 +16,7 @@ PLOT_INPUT   ?= $(SWEEP_OUTPUT)
 PLOT_OUTPUT  ?= plots
 PLOT_TRACE   ?=
 
-.PHONY: help build release test check fmt clippy audit bench run sweep plot plot-test clean doc coverage flamegraph
+.PHONY: help build release test check fmt clippy audit bench run sweep plot plot-test repro-suite repro-test clean doc coverage flamegraph
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -87,6 +87,12 @@ plot: ## Plot paper metrics from sweep CSV (Python + matplotlib)
 
 plot-test: ## Run plotting script sanity tests (stdlib unittest)
 	python3 -m unittest scripts/test_plot_experiments.py scripts/test_plot_suite.py
+
+repro-suite: ## Run deterministic algorithm paper reproduction suite
+	python3 scripts/alg_paper_reproduction_suite.py
+
+repro-test: ## Run reproduction suite script tests
+	python3 -m unittest scripts/test_alg_paper_reproduction_suite.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts

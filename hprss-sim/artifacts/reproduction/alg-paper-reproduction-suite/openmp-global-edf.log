@@ -1,0 +1,35 @@
+OpenMP approximation assumptions (3):
+  - omp-region-collapsed-to-task: Each OpenMP parallel region is collapsed into one simulator task.
+  - omp-missing-observed-exec: Missing observed_exec_ns leaves per-job execution unresolved for device-time resolution.
+  - omp-derived-absolute-deadline: Missing instance absolute_deadline_ns is approximated as release_ns + relative_deadline_ns.
+[2m2026-04-09T04:27:40.285895Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=31
+[2m2026-04-09T04:27:40.285906Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=7
+HPRSS Simulation Summary
+algorithm      : Global-EDF
+algorithm_key  : global-edf
+algorithm_family: deadline-driven
+analysis_mode  : none
+analysis_scope : none
+analysis_assumption_count: 0
+workload_source: openmp-specialized
+approximation_assumption_count: 3
+approximation_assumptions: [{"code":"omp-region-collapsed-to-task","detail":"Each OpenMP parallel region is collapsed into one simulator task."},{"code":"omp-missing-observed-exec","detail":"Missing observed_exec_ns leaves per-job execution unresolved for device-time resolution."},{"code":"omp-derived-absolute-deadline","detail":"Missing instance absolute_deadline_ns is approximated as release_ns + relative_deadline_ns."}]
+total_jobs      : 2
+completed_jobs  : 2
+deadline_misses : 0
+miss_ratio      : 0.000000
+schedulable     : true
+makespan_ns     : 170000
+avg_response_ns : 34500.000
+worst_response_ns: 50000
+transfer_overhead_ns: 0
+preemption_count : 0
+migration_count  : 0
+bus_contention_ratio: 0.000000
+energy_total_joules: 0.001035000
+events_processed: 7
+wall_time_us    : 23
+
+[stderr]
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
+     Running `target/release/hprss-sim --platform configs/platform_ft2000_full.toml --seed 31 --scheduler global-edf --analysis-mode none --openmp-specialized-json crates/hprss-workload/tests/fixtures/openmp_specialized_sample.json run`

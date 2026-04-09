@@ -1,0 +1,33 @@
+{
+  "regions": [
+    {
+      "region_id": 20,
+      "name": "omp-saxpy",
+      "priority": 2,
+      "criticality": "Lo",
+      "requested_threads": 8,
+      "schedule_kind": "static",
+      "chunk_size": 32,
+      "loop_iteration_count": 1024,
+      "affinity": ["Cpu", "Gpu"],
+      "device_profiles": [
+        { "device_type": "Cpu", "wcet_ns": 45000 },
+        { "device_type": "Gpu", "wcet_ns": 15000 }
+      ],
+      "relative_deadline_ns": 90000,
+      "data_size": 4096
+    }
+  ],
+  "instances": [
+    {
+      "region_id": 20,
+      "release_ns": 0,
+      "absolute_deadline_ns": 90000,
+      "observed_exec_ns": 14000
+    },
+    {
+      "region_id": 20,
+      "release_ns": 120000
+    }
+  ]
+}

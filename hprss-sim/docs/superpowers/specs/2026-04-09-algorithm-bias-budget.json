@@ -1,0 +1,152 @@
+{
+  "report_date": "2026-04-09",
+  "artifact_summary": {
+    "record_count": 164,
+    "scenario_status_counts": {
+      "ok": 164
+    },
+    "scenario_type_counts": {
+      "synthetic-sweep": 160,
+      "openmp-adapter": 2,
+      "karami-paper-profile": 2
+    }
+  },
+  "status_definitions": {
+    "implemented_baseline": "Implementation path exists and is executable as baseline.",
+    "approximation_bound": "Implementation path exists with known approximation-fidelity limits.",
+    "unsupported": "No implementation path exists.",
+    "failed_scenario": "Scenario execution failed and blocks fidelity claims."
+  },
+  "implementation_status_totals": {
+    "implemented_baseline": 10,
+    "approximation_bound": 5,
+    "unsupported": 0,
+    "failed_scenario": 0
+  },
+  "by_paper": [
+    {
+      "paper_file": "SHAPE_ICCAD2022_Xu.pdf",
+      "algorithm": "SHAPE",
+      "family": "analytic test",
+      "status": "approximation_bound",
+      "bias_class": "approximation_bound",
+      "note": "SHAPE path exists, but fidelity remains approximation-bound until paper-native calibration bounds are formalized."
+    },
+    {
+      "paper_file": "XSched_OSDI25_Shen.pdf",
+      "algorithm": "XSched",
+      "family": "online scheduler",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Scheduler module and CLI/catalog wiring are present as executable baseline."
+    },
+    {
+      "paper_file": "GCAPS_2024_Wang.pdf",
+      "algorithm": "GCAPS",
+      "family": "online scheduler",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Scheduler module and CLI/catalog wiring are present as executable baseline."
+    },
+    {
+      "paper_file": "RT_Conditional_DAG_TCAD2023_He.pdf",
+      "algorithm": "Conditional-DAG schedulability analysis",
+      "family": "analytic test",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Analytic module exists and is integrated in the validation surface."
+    },
+    {
+      "paper_file": "RT_Heterogeneous_GenAI_2025_Karami.pdf",
+      "algorithm": "Karami paper-profile adapter",
+      "family": "external adapter",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Karami adapter is integrated into CLI/reproduction and now appears in suite records."
+    },
+    {
+      "paper_file": "Preemptive_Priority_GPU_RT_2024_Wang.pdf",
+      "algorithm": "Preemptive-Priority GPU",
+      "family": "online scheduler",
+      "status": "approximation_bound",
+      "bias_class": "approximation_bound",
+      "note": "Implementation path exists, but paper-level fidelity claims remain bounded by approximation assumptions."
+    },
+    {
+      "paper_file": "Util_Vectors_RTSS2020_Griffin.pdf",
+      "algorithm": "Utilization Vectors",
+      "family": "analytic test",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Analytic module exists as executable baseline in validation layer."
+    },
+    {
+      "paper_file": "GPREEMPT_ATC25_Fan.pdf",
+      "algorithm": "GPreempt",
+      "family": "online scheduler",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Scheduler module and CLI/catalog wiring are present as executable baseline."
+    },
+    {
+      "paper_file": "RTA_Uniform_ECRTS2024_Sun.pdf",
+      "algorithm": "Uniform multiprocessor RTA",
+      "family": "analytic test",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Uniform RTA module exists in validation analytics as executable baseline."
+    },
+    {
+      "paper_file": "Eval_SchedTests_WATERS2016_Davis.pdf",
+      "algorithm": "Liu-Layland/EDF/RTA/OPA sched tests",
+      "family": "analytic test",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Baseline remains implemented and exact-reference friendly in current suite outputs."
+    },
+    {
+      "paper_file": "RTGPU_TPDS23_Zou.pdf",
+      "algorithm": "RTGPU",
+      "family": "online scheduler",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Scheduler module and CLI/catalog wiring are present as executable baseline."
+    },
+    {
+      "paper_file": "SimSo_WATERS2014_Cheramy.pdf",
+      "algorithm": "SimSo differential adapter",
+      "family": "external adapter",
+      "status": "approximation_bound",
+      "bias_class": "approximation_bound",
+      "note": "Adapter is available; fidelity remains bounded by adapter-contract scope assumptions."
+    },
+    {
+      "paper_file": "MATCH_RTSS2025_Ni.pdf",
+      "algorithm": "MATCH",
+      "family": "online scheduler",
+      "status": "implemented_baseline",
+      "bias_class": "implemented_baseline",
+      "note": "Scheduler implementation (`match_sched`) and integration tests are present as baseline."
+    },
+    {
+      "paper_file": "WCRT_OpenMP_RTSS2021_Sun.pdf",
+      "algorithm": "OpenMP WCRT analysis",
+      "family": "analytic test",
+      "status": "approximation_bound",
+      "bias_class": "approximation_bound",
+      "note": "OpenMP adapter scenarios are passing, but still rely on explicit approximation assumptions."
+    },
+    {
+      "paper_file": "Survey_RT_Heterogeneous_2025_Zou.pdf",
+      "algorithm": "Survey taxonomy mapping",
+      "family": "external adapter",
+      "status": "approximation_bound",
+      "bias_class": "approximation_bound",
+      "note": "Coverage map exists; this remains a taxonomy approximation layer, not a single executable algorithm."
+    }
+  ],
+  "open_issues": [
+    "Approximation-bound items require explicit quantitative fidelity bounds before paper-equivalence claims.",
+    "Adapter-backed scenarios are operational; remaining risk is approximation fidelity, not missing implementation paths."
+  ]
+}

@@ -5,6 +5,8 @@
 
 pub mod dag_generator;
 pub mod generator;
+pub mod karami_profile_adapter;
+pub mod openmp_adapter;
 pub mod replay;
 pub mod uunifast;
 
@@ -13,7 +15,15 @@ pub use dag_generator::{
     generate_layered_dag,
 };
 pub use generator::{WorkloadConfig, generate_taskset};
+pub use karami_profile_adapter::{
+    KaramiAssumptionSpec, KaramiPaperProfileWorkload, KaramiPaperProfileWorkloadError,
+    KaramiScenarioSpec, adapt_karami_paper_profile_json, adapt_karami_paper_profile_json_str,
+};
+pub use openmp_adapter::{
+    OpenMpSpecializedWorkload, OpenMpSpecializedWorkloadError, adapt_openmp_specialized_json,
+    adapt_openmp_specialized_json_str,
+};
 pub use replay::{
-    ReplayExecHint, ReplayJobSpec, ReplayTaskSpec, ReplayWorkload, ReplayWorkloadError,
-    load_replay_csv, load_replay_json,
+    ReplayAssumption, ReplayExecHint, ReplayJobSpec, ReplayMetadata, ReplayTaskSpec,
+    ReplayWorkload, ReplayWorkloadError, load_replay_csv, load_replay_json,
 };

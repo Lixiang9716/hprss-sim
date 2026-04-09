@@ -2,8 +2,10 @@ use std::process::Command;
 use std::{path::PathBuf, time::Duration};
 
 use hprss_validate::{
-    CpuOnlySchedulerConfig, SimsoAdapterConfig, SimsoAdapterError, default_simso_adapter_runner,
+    CpuOnlySchedulerConfig, SimsoAdapterConfig, SimsoAdapterError, SimsoDiagnosticCategory,
+    SimsoScenarioDomain, SimsoScenarioModel, SimsoTaskModel, default_simso_adapter_runner,
     normalize_simso_output, run_level3_simso_differential, selected_cpu_only_workloads,
+    validate_simso_scenario,
 };
 
 fn fixture_runner(name: &str) -> PathBuf {
@@ -44,6 +46,24 @@ fn adapter_invocation_contract_and_mapping_are_wired() {
 }
 
 #[test]
+fn adapter_invocation_supports_extended_schema_contract() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .find(|w| w.name == "single-task-control")
+        .expect("single-task-control fixture must exist");
+    let config =
+        SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_extended_schema_sentinel.py"))
+            .with_tolerance(1e-12);
+
+    let report =
+        run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::FixedPriority, &config)
+            .expect("extended-schema fixture adapter should execute");
+
+    assert!(report.outputs_match);
+    assert_eq!(report.simso.deadline_misses, 0);
+}
+
+#[test]
 fn comparison_matches_when_adapter_output_aligns() {
     let workload = selected_cpu_only_workloads()
         .into_iter()
@@ -63,6 +83,64 @@ fn comparison_matches_when_adapter_output_aligns() {
     );
     assert_eq!(report.hprss.deadline_misses, report.simso.deadline_misses);
     assert_eq!(report.hprss.completion_count, report.simso.completion_count);
+}
+
+#[test]
+fn extended_scope_validation_reports_categorized_reasons() {
+    let unsupported = [
+        (
+            SimsoScenarioModel {
+                domain: SimsoScenarioDomain::Heterogeneous,
+                ..SimsoScenarioModel::strict_cpu_only()
+            },
+            SimsoDiagnosticCategory::Domain,
+            "domain_not_supported",
+        ),
+        (
+            SimsoScenarioModel {
+                core_count: 2,
+                ..SimsoScenarioModel::strict_cpu_only()
+            },
+            SimsoDiagnosticCategory::ResourceTopology,
+            "core_count_not_supported",
+        ),
+        (
+            SimsoScenarioModel {
+                task_model: SimsoTaskModel::Sporadic,
+                ..SimsoScenarioModel::strict_cpu_only()
+            },
+            SimsoDiagnosticCategory::TaskModel,
+            "task_model_not_supported",
+        ),
+        (
+            SimsoScenarioModel {
+                uses_non_cpu_devices: true,
+                ..SimsoScenarioModel::strict_cpu_only()
+            },
+            SimsoDiagnosticCategory::DeviceModel,
+            "non_cpu_device_not_supported",
+        ),
+        (
+            SimsoScenarioModel {
+                uses_mixed_criticality: true,
+                ..SimsoScenarioModel::strict_cpu_only()
+            },
+            SimsoDiagnosticCategory::CriticalityModel,
+            "mixed_criticality_not_supported",
+        ),
+    ];
+
+    for (scenario, expected_category, expected_code) in unsupported {
+        let err = validate_simso_scenario(&scenario).expect_err("scenario should be unsupported");
+        assert!(matches!(
+            err,
+            SimsoAdapterError::UnsupportedScenario {
+                category,
+                code,
+                ..
+            } if category == expected_category && code == expected_code
+        ));
+    }
 }
 
 #[test]

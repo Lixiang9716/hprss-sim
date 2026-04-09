@@ -1,0 +1,34 @@
+OpenMP approximation assumptions (2):
+  - karami-paper-profile: Workload adapted from paper profile 'karami-rt-genai-profile-a' for deterministic simulator replay.
+  - karami-burst-window: Prompt bursts are represented by precomputed release offsets. [rationale: Paper reports burst groups instead of a closed-form arrival model.]
+[2m2026-04-09T04:27:40.381996Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=41
+[2m2026-04-09T04:27:40.382007Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=16
+HPRSS Simulation Summary
+algorithm      : Global-EDF
+algorithm_key  : global-edf
+algorithm_family: deadline-driven
+analysis_mode  : none
+analysis_scope : none
+analysis_assumption_count: 0
+workload_source: karami-paper-profile
+approximation_assumption_count: 2
+approximation_assumptions: [{"code":"karami-paper-profile","detail":"Workload adapted from paper profile 'karami-rt-genai-profile-a' for deterministic simulator replay."},{"code":"karami-burst-window","detail":"Prompt bursts are represented by precomputed release offsets. [rationale: Paper reports burst groups instead of a closed-form arrival model.]"}]
+total_jobs      : 5
+completed_jobs  : 5
+deadline_misses : 0
+miss_ratio      : 0.000000
+schedulable     : true
+makespan_ns     : 245000
+avg_response_ns : 49000.000
+worst_response_ns: 65000
+transfer_overhead_ns: 0
+preemption_count : 0
+migration_count  : 0
+bus_contention_ratio: 0.000000
+energy_total_joules: 0.003675000
+events_processed: 16
+wall_time_us    : 16
+
+[stderr]
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
+     Running `target/release/hprss-sim --platform configs/platform_ft2000_full.toml --seed 41 --scheduler global-edf --analysis-mode none --karami-profile-json crates/hprss-workload/tests/fixtures/karami_profile_sample.json run`

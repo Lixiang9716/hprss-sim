@@ -1,4 +1,9 @@
+pub mod conditional_dag;
 pub mod level1;
 pub mod level2;
 pub mod level4;
+pub mod openmp_wcrt;
 pub mod rta;
+pub mod shape;
+pub mod uniform_rta;
+pub mod util_vectors;

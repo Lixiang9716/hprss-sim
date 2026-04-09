@@ -10,7 +10,8 @@
 
 > 本文最初是设计规格；以下条目用于覆盖后续实现状态，优先于下文的“未实现/未来工作”历史描述。
 
-- 调度器能力已扩展为：`fp, edf, edfvd, llf, heft, cpedf, federated`
+- 调度器能力已扩展为：`fp, edf, edfvd, llf, heft, cpedf, federated, global-edf, gang`
+- CLI 额外公开分析模式标签：`--analysis-mode`（单次）与 `sweep --analysis-modes`
 - CLI 已支持 replay 模式：`--replay-json` 与 `--replay-csv-tasks/--replay-csv-jobs`
 - `hprss-devices` 已提供虚拟设备抢占模型测试（fully/limited/interrupt/non-preemptive）
 - Sweep 输出已包含扩展论文指标与复现实验元数据（算法标签、运行指纹/版本信息）
@@ -21,7 +22,8 @@
 ```bash
 # 多调度器扫参
 cargo run --release -p hprss-sim -- --platform configs/platform_ft2000_full.toml \
-  sweep --schedulers fp,edf,edfvd,llf,heft,cpedf,federated \
+  sweep --schedulers fp,edf,edfvd,llf,heft,cpedf,federated,global-edf,gang \
+  --analysis-modes none,rta-uniprocessor-fp \
   --utilizations 0.5:0.1:0.9 --task-counts 10,50,100 --seeds 1:5 --output sweep_results.csv
 
 # replay 重放（CSV）

@@ -15,6 +15,12 @@
 pub mod analytic;
 pub mod differential;
 
+pub use analytic::conditional_dag::{
+    CONDITIONAL_DAG_SCOPE, ConditionAssignment, ConditionLiteral, ConditionalDagAnalysisConfig,
+    ConditionalDagAnalysisError, ConditionalDagAnalysisReport, ConditionalDagEdge,
+    ConditionalDagModelAssumptions, ConditionalDagNode, ConditionalDagScenarioReport,
+    analyze_conditional_dag,
+};
 pub use analytic::level1::{
     CpuTask, LEVEL1_SCOPE, Level1SimulationSummary, audsley_opa, dm_priority_assignment,
     edf_exact_bound, fp_tasks_with_priorities, hyperperiod, liu_layland_rm_bound,
@@ -31,9 +37,28 @@ pub use analytic::level4::{
     observe_dag_transfer_gating, observe_dsp_dma_blocking, observe_fpga_non_preemptive_switch,
     observe_gpu_limited_preemption_boundary,
 };
+pub use analytic::openmp_wcrt::{
+    OPENMP_WCRT_SCOPE, OpenMpWcrtConfig, OpenMpWcrtError, OpenMpWcrtModelAssumptions,
+    OpenMpWcrtReport, OpenMpWcrtStatus, OpenMpWcrtTask, OpenMpWcrtTaskResult,
+    OpenMpWcrtUnschedulableReason, analyze_openmp_wcrt,
+};
 pub use analytic::rta::{
-    FpTask, RtaConfig, RtaReport, TaskRtaResult, TaskSchedulability, UnschedulableReason,
-    analyze_uniprocessor_fp,
+    AnalysisAlgorithm, AnalysisConfig, AnalysisOutcome, AnalysisReport, AnalysisTaskResult, FpTask,
+    InconclusiveReason, RtaConfig, RtaReport, TaskRtaResult, TaskSchedulability,
+    UnschedulableReason, analyze_fp_family, analyze_uniprocessor_fp,
+};
+pub use analytic::shape::{
+    SHAPE_BASELINE_UTILIZATION_POINTS, SHAPE_SCOPE, ShapeAnalysisConfig, ShapeAnalysisError,
+    ShapeAnalysisReport, ShapeCurvePoint, ShapeCurveSample, ShapeModelAssumptions,
+    analyze_shape_curve, baseline_shape_fixture,
+};
+pub use analytic::uniform_rta::{
+    UNIFORM_RTA_SCOPE, UniformRtaConfig, UniformRtaReport, UniformTaskResult, UniformTaskStatus,
+    analyze_uniform_global_fp,
+};
+pub use analytic::util_vectors::{
+    UTIL_VECTORS_SCOPE, UtilizationVectorConfig, UtilizationVectorReport, UtilizationVectorTask,
+    UtilizationVectorViolation, UtilizationVectorViolationKind, analyze_utilization_vectors,
 };
 pub use differential::cpu_only::{
     CpuOnlyDifferentialReport, CpuOnlyRunSummary, CpuOnlySchedulerConfig, CpuOnlyTask,
@@ -50,6 +75,7 @@ pub use differential::paper_exp::{
 };
 pub use differential::simso::{
     LEVEL3_SCOPE, Level3SimsoDifferentialReport, SimsoAdapterConfig, SimsoAdapterError,
-    SimsoRunSummary, default_simso_adapter_runner, normalize_simso_output,
-    run_level3_simso_differential, run_level3_simso_selected,
+    SimsoDiagnosticCategory, SimsoRunSummary, SimsoScenarioDomain, SimsoScenarioModel,
+    SimsoTaskModel, default_simso_adapter_runner, normalize_simso_output,
+    run_level3_simso_differential, run_level3_simso_selected, validate_simso_scenario,
 };

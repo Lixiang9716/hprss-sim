@@ -1,13 +1,21 @@
 //! Scheduler trait implementations.
 //!
-//! Built-in algorithms: Fixed Priority, EDF family, LLF, HEFT, CP-EDF, Federated.
+//! Built-in algorithms: Fixed Priority, EDF family, Global-EDF, Gang, LLF, HEFT, CP-EDF, Federated, XSched, GCAPS, GPreempt, RTGPU, MATCH.
 
 pub mod cpedf;
 pub mod edf;
 pub mod edfvd;
 pub mod federated;
+pub mod gang;
+pub mod gcaps;
+pub mod global_edf;
+pub mod gpreempt;
+pub mod gpu_preemptive_priority;
 pub mod heft;
 pub mod llf;
+pub mod match_sched;
+pub mod rtgpu;
+pub mod xsched;
 
 use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
@@ -15,8 +23,16 @@ pub use cpedf::CpEdfScheduler;
 pub use edf::EdfScheduler;
 pub use edfvd::EdfVdScheduler;
 pub use federated::FederatedScheduler;
+pub use gang::GangScheduler;
+pub use gcaps::GcapsScheduler;
+pub use global_edf::GlobalEdfScheduler;
+pub use gpreempt::GPreemptScheduler;
+pub use gpu_preemptive_priority::GpuPreemptivePriorityScheduler;
 pub use heft::{HeftPlan, HeftPlanner, HeftScheduler};
 pub use llf::LlfScheduler;
+pub use match_sched::MatchScheduler;
+pub use rtgpu::RtgpuScheduler;
+pub use xsched::XSchedScheduler;
 
 /// Fixed-Priority scheduler (Rate Monotonic as default priority assignment)
 pub struct FixedPriorityScheduler;
@@ -221,6 +237,42 @@ mod tests {
     }
 
     #[test]
+    fn global_edf_scheduler_name() {
+        let sched = crate::global_edf::GlobalEdfScheduler;
+        assert_eq!(sched.name(), "Global-EDF");
+    }
+
+    #[test]
+    fn gang_scheduler_name() {
+        let sched = crate::gang::GangScheduler::default();
+        assert_eq!(sched.name(), "Gang");
+    }
+
+    #[test]
+    fn xsched_scheduler_name() {
+        let sched = crate::xsched::XSchedScheduler;
+        assert_eq!(sched.name(), "XSched");
+    }
+
+    #[test]
+    fn gpreempt_scheduler_name() {
+        let sched = crate::gpreempt::GPreemptScheduler;
+        assert_eq!(sched.name(), "GPreempt");
+    }
+
+    #[test]
+    fn gpu_preemptive_priority_scheduler_name() {
+        let sched = crate::gpu_preemptive_priority::GpuPreemptivePriorityScheduler;
+        assert_eq!(sched.name(), "GPU-Preemptive-Priority");
+    }
+
+    #[test]
+    fn match_scheduler_name() {
+        let sched = crate::match_sched::MatchScheduler::default();
+        assert_eq!(sched.name(), "MATCH");
+    }
+
+    #[test]
     fn fp_edf_heft_keep_reevaluation_disabled_by_default() {
         assert_eq!(
             FixedPriorityScheduler.reevaluation_policy(),
@@ -244,6 +296,10 @@ mod tests {
         );
         assert_eq!(
             crate::federated::FederatedScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::match_sched::MatchScheduler::default().reevaluation_policy(),
             ReevaluationPolicy::Disabled
         );
     }

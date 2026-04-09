@@ -1,0 +1,72 @@
+{
+  "suite": "alg-paper-reproduction-suite",
+  "platform": "configs/platform_ft2000_full.toml",
+  "archive_dir": "artifacts/reproduction/alg-paper-reproduction-suite",
+  "sweep": {
+    "utilizations": [
+      0.55
+    ],
+    "task_counts": [
+      12
+    ],
+    "seeds": [
+      7,
+      8
+    ],
+    "schedulers": [
+      "fp",
+      "edf",
+      "global-edf",
+      "gang",
+      "xsched",
+      "gcaps",
+      "gpreempt",
+      "rtgpu",
+      "match",
+      "gpu-preemptive-priority"
+    ],
+    "analysis_modes": [
+      "none",
+      "rta-uniprocessor-fp",
+      "rta-uniform-global-fp-scaffold",
+      "util-vectors",
+      "uniform-rta-global-fp",
+      "conditional-dag",
+      "shape",
+      "simso-scope-extension"
+    ],
+    "jobs": 1
+  },
+  "openmp_runs": [
+    {
+      "name": "openmp-global-edf",
+      "openmp_specialized_json": "crates/hprss-workload/tests/fixtures/openmp_specialized_sample.json",
+      "scheduler": "global-edf",
+      "analysis_mode": "none",
+      "seed": 31
+    },
+    {
+      "name": "openmp-gang",
+      "openmp_specialized_json": "crates/hprss-workload/tests/fixtures/openmp_specialized_sample.json",
+      "scheduler": "gang",
+      "analysis_mode": "none",
+      "seed": 37
+    }
+  ],
+  "karami_runs": [
+    {
+      "name": "karami-global-edf",
+      "karami_profile_json": "crates/hprss-workload/tests/fixtures/karami_profile_sample.json",
+      "scheduler": "global-edf",
+      "analysis_mode": "none",
+      "seed": 41
+    },
+    {
+      "name": "karami-gang",
+      "karami_profile_json": "crates/hprss-workload/tests/fixtures/karami_profile_sample.json",
+      "scheduler": "gang",
+      "analysis_mode": "none",
+      "seed": 43
+    }
+  ]
+}

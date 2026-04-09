@@ -1212,7 +1212,10 @@ impl SimEngine {
     }
 
     fn task(&self, task_id: TaskId) -> Option<&Task> {
-        self.task_registry.get(task_id.0 as usize)
+        self.task_registry
+            .binary_search_by_key(&task_id.0, |task| task.id.0)
+            .ok()
+            .and_then(|idx| self.task_registry.get(idx))
     }
 
     fn mixed_criticality_lo_wcet(&self, task_id: TaskId) -> Option<Nanos> {
@@ -1697,6 +1700,88 @@ mod tests {
         // Execution: (5+10+20)W * 100ns = 3500e-9 J
         // Transfer counted once: 20W * 50ns = 1000e-9 J
         assert!((energy - 4_500.0e-9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn arrival_callback_supports_sparse_task_ids() {
+        struct ArrivalProbeScheduler {
+            saw_arrival: bool,
+        }
+
+        impl Scheduler for ArrivalProbeScheduler {
+            fn name(&self) -> &str {
+                "arrival-probe"
+            }
+
+            fn on_job_arrival(
+                &mut self,
+                _job: &Job,
+                task: &Task,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                assert_eq!(task.id, TaskId(20));
+                self.saw_arrival = true;
+                vec![Action::NoOp]
+            }
+
+            fn on_job_complete(
+                &mut self,
+                _job: &Job,
+                _device_id: DeviceId,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_preemption_point(
+                &mut self,
+                _device_id: DeviceId,
+                _running_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_criticality_change(
+                &mut self,
+                _new_level: CriticalityLevel,
+                _trigger_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+        }
+
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 100,
+                seed: 11,
+            },
+            vec![cpu_device()],
+            vec![],
+            vec![],
+        );
+        engine.register_tasks(vec![Task {
+            id: TaskId(20),
+            name: "openmp-region".to_string(),
+            priority: 1,
+            arrival: ArrivalModel::Aperiodic,
+            deadline: 50,
+            criticality: CriticalityLevel::Lo,
+            exec_times: vec![(
+                DeviceType::Cpu,
+                ExecutionTimeModel::Deterministic { wcet: 10 },
+            )],
+            affinity: vec![DeviceType::Cpu],
+            data_size: 0,
+        }]);
+        let task_id = TaskId(20);
+        let job_id = engine.create_job(task_id, 0, 50, Some(10), 1);
+        engine.schedule_event(0, EventKind::TaskArrival { task_id, job_id });
+
+        let mut scheduler = ArrivalProbeScheduler { saw_arrival: false };
+        engine.run(&mut scheduler);
+        assert!(scheduler.saw_arrival);
     }
 
     #[test]

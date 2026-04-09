@@ -38,6 +38,54 @@ pub struct Level3SimsoDifferentialReport {
     pub outputs_match: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimsoScenarioDomain {
+    CpuOnly,
+    CpuMultiprocessor,
+    Heterogeneous,
+    Dag,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimsoTaskModel {
+    Periodic,
+    Sporadic,
+    Dag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SimsoScenarioModel {
+    pub domain: SimsoScenarioDomain,
+    pub core_count: u32,
+    pub task_model: SimsoTaskModel,
+    pub uses_non_cpu_devices: bool,
+    pub uses_mixed_criticality: bool,
+}
+
+impl SimsoScenarioModel {
+    pub fn strict_cpu_only() -> Self {
+        Self {
+            domain: SimsoScenarioDomain::CpuOnly,
+            core_count: 1,
+            task_model: SimsoTaskModel::Periodic,
+            uses_non_cpu_devices: false,
+            uses_mixed_criticality: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimsoDiagnosticCategory {
+    Domain,
+    ResourceTopology,
+    TaskModel,
+    DeviceModel,
+    CriticalityModel,
+}
+
 #[derive(Debug, Clone)]
 pub struct SimsoAdapterConfig {
     pub runner: PathBuf,
@@ -101,15 +149,44 @@ pub enum SimsoAdapterError {
     MissingField { field: &'static str },
     #[error("adapter output field `{field}` has invalid value: {value}")]
     InvalidField { field: &'static str, value: String },
+    #[error("unsupported scenario ({category:?}/{code}): {detail}")]
+    UnsupportedScenario {
+        category: SimsoDiagnosticCategory,
+        code: &'static str,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct SimsoAdapterInput {
     adapter_contract: &'static str,
+    strict_mode: bool,
     workload: String,
     horizon_ns: u64,
     scheduler: &'static str,
+    scenario: SimsoAdapterScenario,
+    algorithm: SimsoAdapterAlgorithm,
+    model: SimsoAdapterModel,
     tasks: Vec<SimsoAdapterTask>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimsoAdapterScenario {
+    domain: SimsoScenarioDomain,
+    core_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimsoAdapterAlgorithm {
+    requested: &'static str,
+    canonical: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimsoAdapterModel {
+    time_unit: &'static str,
+    task_model: SimsoTaskModel,
+    mixed_criticality: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -151,7 +228,7 @@ pub fn run_level3_simso_differential(
     config: &SimsoAdapterConfig,
 ) -> Result<Level3SimsoDifferentialReport, SimsoAdapterError> {
     let hprss = run_cpu_only_scheduler(workload, scheduler);
-    let adapter_input = serde_json::to_string(&build_adapter_input(workload, scheduler))
+    let adapter_input = serde_json::to_string(&build_adapter_input(workload, scheduler)?)
         .map_err(SimsoAdapterError::SerializeInput)?;
     let adapter_output = execute_adapter(config, &adapter_input)?;
     let simso = normalize_simso_output(&adapter_output)?;
@@ -197,19 +274,93 @@ pub fn normalize_simso_output(output_json: &str) -> Result<SimsoRunSummary, Sims
 fn build_adapter_input(
     workload: &CpuOnlyWorkload,
     scheduler: CpuOnlySchedulerConfig,
-) -> SimsoAdapterInput {
-    SimsoAdapterInput {
+) -> Result<SimsoAdapterInput, SimsoAdapterError> {
+    build_adapter_input_with_scenario(workload, scheduler, &SimsoScenarioModel::strict_cpu_only())
+}
+
+fn build_adapter_input_with_scenario(
+    workload: &CpuOnlyWorkload,
+    scheduler: CpuOnlySchedulerConfig,
+    scenario: &SimsoScenarioModel,
+) -> Result<SimsoAdapterInput, SimsoAdapterError> {
+    validate_simso_scenario(scenario)?;
+    let scheduler = scheduler_label(scheduler);
+    Ok(SimsoAdapterInput {
         adapter_contract: ADAPTER_CONTRACT,
+        strict_mode: true,
         workload: workload.name.to_string(),
         horizon_ns: workload.horizon,
-        scheduler: scheduler_label(scheduler),
+        scheduler,
+        scenario: SimsoAdapterScenario {
+            domain: scenario.domain,
+            core_count: scenario.core_count,
+        },
+        algorithm: SimsoAdapterAlgorithm {
+            requested: scheduler,
+            canonical: scheduler,
+        },
+        model: SimsoAdapterModel {
+            time_unit: "ns",
+            task_model: scenario.task_model,
+            mixed_criticality: scenario.uses_mixed_criticality,
+        },
         tasks: workload
             .tasks
             .iter()
             .enumerate()
             .map(|(task_id, task)| to_adapter_task(task_id as u32, task))
             .collect(),
+    })
+}
+
+pub fn validate_simso_scenario(scenario: &SimsoScenarioModel) -> Result<(), SimsoAdapterError> {
+    if scenario.domain != SimsoScenarioDomain::CpuOnly {
+        return Err(SimsoAdapterError::UnsupportedScenario {
+            category: SimsoDiagnosticCategory::Domain,
+            code: "domain_not_supported",
+            detail: format!(
+                "domain {:?} is outside strict CPU-only SimSo differential scope",
+                scenario.domain
+            ),
+        });
     }
+    if scenario.core_count != 1 {
+        return Err(SimsoAdapterError::UnsupportedScenario {
+            category: SimsoDiagnosticCategory::ResourceTopology,
+            code: "core_count_not_supported",
+            detail: format!(
+                "core_count={} is unsupported; strict path requires exactly 1 core",
+                scenario.core_count
+            ),
+        });
+    }
+    if scenario.task_model != SimsoTaskModel::Periodic {
+        return Err(SimsoAdapterError::UnsupportedScenario {
+            category: SimsoDiagnosticCategory::TaskModel,
+            code: "task_model_not_supported",
+            detail: format!(
+                "task_model {:?} is unsupported; strict path expects periodic tasks",
+                scenario.task_model
+            ),
+        });
+    }
+    if scenario.uses_non_cpu_devices {
+        return Err(SimsoAdapterError::UnsupportedScenario {
+            category: SimsoDiagnosticCategory::DeviceModel,
+            code: "non_cpu_device_not_supported",
+            detail: "heterogeneous/non-CPU devices are not supported in strict differential mode"
+                .to_string(),
+        });
+    }
+    if scenario.uses_mixed_criticality {
+        return Err(SimsoAdapterError::UnsupportedScenario {
+            category: SimsoDiagnosticCategory::CriticalityModel,
+            code: "mixed_criticality_not_supported",
+            detail: "mixed criticality scenarios are not yet supported in SimSo differential"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn execute_adapter(
@@ -392,5 +543,69 @@ mod tests {
         assert_eq!(normalized.deadline_misses, 0);
         assert_eq!(normalized.completion_count, 4);
         assert_eq!(normalized.scheduler.as_deref(), Some("edf"));
+    }
+
+    #[test]
+    fn strict_cpu_only_scenario_validation_passes() {
+        let scenario = SimsoScenarioModel::strict_cpu_only();
+        assert!(validate_simso_scenario(&scenario).is_ok());
+    }
+
+    #[test]
+    fn scenario_validation_categorizes_unsupported_reasons() {
+        let unsupported = [
+            (
+                SimsoScenarioModel {
+                    domain: SimsoScenarioDomain::Heterogeneous,
+                    ..SimsoScenarioModel::strict_cpu_only()
+                },
+                SimsoDiagnosticCategory::Domain,
+                "domain_not_supported",
+            ),
+            (
+                SimsoScenarioModel {
+                    core_count: 4,
+                    ..SimsoScenarioModel::strict_cpu_only()
+                },
+                SimsoDiagnosticCategory::ResourceTopology,
+                "core_count_not_supported",
+            ),
+            (
+                SimsoScenarioModel {
+                    task_model: SimsoTaskModel::Dag,
+                    ..SimsoScenarioModel::strict_cpu_only()
+                },
+                SimsoDiagnosticCategory::TaskModel,
+                "task_model_not_supported",
+            ),
+            (
+                SimsoScenarioModel {
+                    uses_non_cpu_devices: true,
+                    ..SimsoScenarioModel::strict_cpu_only()
+                },
+                SimsoDiagnosticCategory::DeviceModel,
+                "non_cpu_device_not_supported",
+            ),
+            (
+                SimsoScenarioModel {
+                    uses_mixed_criticality: true,
+                    ..SimsoScenarioModel::strict_cpu_only()
+                },
+                SimsoDiagnosticCategory::CriticalityModel,
+                "mixed_criticality_not_supported",
+            ),
+        ];
+
+        for (scenario, expected_category, expected_code) in unsupported {
+            let err = validate_simso_scenario(&scenario).expect_err("scenario should be rejected");
+            assert!(matches!(
+                err,
+                SimsoAdapterError::UnsupportedScenario {
+                    category,
+                    code,
+                    ..
+                } if category == expected_category && code == expected_code
+            ));
+        }
     }
 }

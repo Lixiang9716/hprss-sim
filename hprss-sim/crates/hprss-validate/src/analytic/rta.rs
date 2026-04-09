@@ -29,6 +29,10 @@ pub enum UnschedulableReason {
         last_estimate: u64,
         max_iterations: usize,
     },
+    CapacityExceeded {
+        total_utilization_ppm: u64,
+        total_capacity_ppm: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +59,138 @@ impl RtaReport {
         self.task_results
             .iter()
             .all(|r| matches!(r.schedulability, TaskSchedulability::Schedulable))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisAlgorithm {
+    UniprocessorFixedPriority,
+    UniformMultiprocessorGlobalFpScaffold,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnalysisConfig {
+    pub max_iterations: usize,
+    pub processor_count: usize,
+    pub speed_factors: Vec<f64>,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 100,
+            processor_count: 1,
+            speed_factors: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InconclusiveReason {
+    NeedsDetailedInterferenceModel,
+    NoProgressOnAnyProcessor,
+    IterationLimitReached {
+        last_estimate: u64,
+        max_iterations: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnalysisOutcome {
+    Schedulable,
+    Unschedulable(UnschedulableReason),
+    Inconclusive(InconclusiveReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisTaskResult {
+    pub task_index: usize,
+    pub response_time: u64,
+    pub iterations: usize,
+    pub outcome: AnalysisOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisReport {
+    pub task_results: Vec<AnalysisTaskResult>,
+    pub total_utilization_ppm: u64,
+    pub total_capacity_ppm: u64,
+}
+
+impl AnalysisReport {
+    pub fn is_schedulable(&self) -> bool {
+        self.task_results
+            .iter()
+            .all(|r| matches!(r.outcome, AnalysisOutcome::Schedulable))
+    }
+}
+
+pub fn analyze_fp_family(
+    algorithm: AnalysisAlgorithm,
+    tasks: &[FpTask],
+    config: AnalysisConfig,
+) -> AnalysisReport {
+    let total_utilization_ppm = utilization_ppm(tasks);
+    match algorithm {
+        AnalysisAlgorithm::UniprocessorFixedPriority => {
+            let report = analyze_uniprocessor_fp(
+                tasks,
+                RtaConfig {
+                    max_iterations: config.max_iterations,
+                },
+            );
+            AnalysisReport {
+                task_results: report
+                    .task_results
+                    .into_iter()
+                    .map(|r| AnalysisTaskResult {
+                        task_index: r.task_index,
+                        response_time: r.response_time,
+                        iterations: r.iterations,
+                        outcome: match r.schedulability {
+                            TaskSchedulability::Schedulable => AnalysisOutcome::Schedulable,
+                            TaskSchedulability::Unschedulable(reason) => {
+                                AnalysisOutcome::Unschedulable(reason)
+                            }
+                        },
+                    })
+                    .collect(),
+                total_utilization_ppm,
+                total_capacity_ppm: 1_000_000,
+            }
+        }
+        AnalysisAlgorithm::UniformMultiprocessorGlobalFpScaffold => {
+            let report = analyze_uniform_global_fp(
+                tasks,
+                UniformRtaConfig {
+                    max_iterations: config.max_iterations,
+                    processor_count: config.processor_count,
+                    speed_factors: config.speed_factors,
+                },
+            );
+            AnalysisReport {
+                task_results: report
+                    .task_results
+                    .into_iter()
+                    .map(|result| AnalysisTaskResult {
+                        task_index: result.task_index,
+                        response_time: result.response_time_upper_bound,
+                        iterations: result.iterations,
+                        outcome: match result.status {
+                            UniformTaskStatus::Schedulable => AnalysisOutcome::Schedulable,
+                            UniformTaskStatus::Unschedulable(reason) => {
+                                AnalysisOutcome::Unschedulable(reason)
+                            }
+                            UniformTaskStatus::Inconclusive(reason) => {
+                                AnalysisOutcome::Inconclusive(reason)
+                            }
+                        },
+                    })
+                    .collect(),
+                total_utilization_ppm: report.total_utilization_ppm,
+                total_capacity_ppm: report.total_capacity_ppm,
+            }
+        }
     }
 }
 
@@ -155,6 +291,14 @@ fn saturating_u128_to_u64(value: u128) -> u64 {
     value.min(u64::MAX as u128) as u64
 }
 
+fn utilization_ppm(tasks: &[FpTask]) -> u64 {
+    tasks
+        .iter()
+        .filter(|t| t.period > 0)
+        .map(|t| ((t.wcet as u128) * 1_000_000u128 / (t.period as u128)) as u64)
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,3 +394,4 @@ mod tests {
         );
     }
 }
+use super::uniform_rta::{UniformRtaConfig, UniformTaskStatus, analyze_uniform_global_fp};

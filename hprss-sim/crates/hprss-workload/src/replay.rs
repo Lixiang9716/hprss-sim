@@ -52,9 +52,25 @@ pub struct ReplayJobSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayAssumption {
+    pub code: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReplayMetadata {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub assumptions: Vec<ReplayAssumption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayWorkload {
     pub tasks: Vec<ReplayTaskSpec>,
     pub jobs: Vec<ReplayJobSpec>,
+    #[serde(default)]
+    pub metadata: ReplayMetadata,
 }
 
 #[derive(Debug, Error)]
@@ -95,7 +111,11 @@ impl ReplayWorkload {
             jobs.push(row?);
         }
 
-        let mut workload = ReplayWorkload { tasks, jobs };
+        let mut workload = ReplayWorkload {
+            tasks,
+            jobs,
+            metadata: ReplayMetadata::default(),
+        };
         workload.validate_and_normalize()?;
         Ok(workload)
     }
@@ -134,7 +154,7 @@ impl ReplayWorkload {
         &self.jobs
     }
 
-    fn validate_and_normalize(&mut self) -> Result<(), ReplayWorkloadError> {
+    pub(crate) fn validate_and_normalize(&mut self) -> Result<(), ReplayWorkloadError> {
         if self.tasks.is_empty() {
             return Err(ReplayWorkloadError::Validation(
                 "tasks list must not be empty".to_string(),
