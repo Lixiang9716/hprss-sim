@@ -1,0 +1,21 @@
+{
+  "tasks": [
+    {
+      "task_id": 0,
+      "name": "cpu-overrun",
+      "priority": 1,
+      "deadline_ns": 50000,
+      "criticality": "Lo",
+      "affinity": ["Cpu"],
+      "exec_hints": [{ "device_type": "Cpu", "wcet_ns": 120000 }],
+      "data_size": 0
+    }
+  ],
+  "jobs": [
+    {
+      "task_id": 0,
+      "release_ns": 0,
+      "actual_exec_ns": 120000
+    }
+  ]
+}

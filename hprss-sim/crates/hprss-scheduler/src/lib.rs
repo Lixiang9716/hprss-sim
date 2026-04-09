@@ -1,14 +1,22 @@
 //! Scheduler trait implementations.
 //!
-//! Built-in algorithms: Fixed Priority, EDF, LLF (heterogeneous variants).
+//! Built-in algorithms: Fixed Priority, EDF family, LLF, HEFT, CP-EDF, Federated.
 
+pub mod cpedf;
 pub mod edf;
+pub mod edfvd;
+pub mod federated;
 pub mod heft;
+pub mod llf;
 
 use hprss_types::{Action, CriticalityLevel, DeviceId, Job, Scheduler, SchedulerView, task::Task};
 
+pub use cpedf::CpEdfScheduler;
 pub use edf::EdfScheduler;
+pub use edfvd::EdfVdScheduler;
+pub use federated::FederatedScheduler;
 pub use heft::{HeftPlan, HeftPlanner, HeftScheduler};
+pub use llf::LlfScheduler;
 
 /// Fixed-Priority scheduler (Rate Monotonic as default priority assignment)
 pub struct FixedPriorityScheduler;
@@ -154,13 +162,29 @@ impl Scheduler for FixedPriorityScheduler {
             vec![Action::NoOp]
         }
     }
+
+    fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        let queue = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .map(|(_, q)| q);
+
+        match queue.and_then(|q| q.first()) {
+            Some(next) => vec![Action::Dispatch {
+                job_id: next.job_id,
+                device_id,
+            }],
+            None => vec![Action::NoOp],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hprss_types::{
-        DeviceId, JobId, TaskId,
+        DeviceId, JobId, ReevaluationPolicy, TaskId,
         device::{DeviceConfig, PreemptionModel},
         scheduler::RunningJobInfo,
         task::{ArrivalModel, CriticalityLevel, DeviceType, ExecutionTimeModel, Task},
@@ -176,6 +200,63 @@ mod tests {
     fn edf_scheduler_name() {
         let sched = crate::edf::EdfScheduler;
         assert_eq!(sched.name(), "EDF-Het");
+    }
+
+    #[test]
+    fn edfvd_scheduler_name() {
+        let sched = crate::edfvd::EdfVdScheduler::default();
+        assert_eq!(sched.name(), "EDF-VD-Het");
+    }
+
+    #[test]
+    fn cpedf_scheduler_name() {
+        let sched = crate::cpedf::CpEdfScheduler::default();
+        assert_eq!(sched.name(), "CP-EDF");
+    }
+
+    #[test]
+    fn federated_scheduler_name() {
+        let sched = crate::federated::FederatedScheduler::default();
+        assert_eq!(sched.name(), "Federated");
+    }
+
+    #[test]
+    fn fp_edf_heft_keep_reevaluation_disabled_by_default() {
+        assert_eq!(
+            FixedPriorityScheduler.reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::edf::EdfScheduler.reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::edfvd::EdfVdScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::heft::HeftScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::cpedf::CpEdfScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+        assert_eq!(
+            crate::federated::FederatedScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Disabled
+        );
+    }
+
+    #[test]
+    fn llf_enables_hybrid_reevaluation_by_default() {
+        assert_eq!(
+            crate::llf::LlfScheduler::default().reevaluation_policy(),
+            ReevaluationPolicy::Hybrid {
+                interval_ns: 5_000,
+                min_interval_ns: 1_000
+            }
+        );
     }
 
     #[test]

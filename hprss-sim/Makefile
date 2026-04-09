@@ -86,7 +86,7 @@ plot: ## Plot paper metrics from sweep CSV (Python + matplotlib)
 	python3 scripts/plot_experiments.py --csv $(PLOT_INPUT) --output-dir $(PLOT_OUTPUT) $(if $(PLOT_TRACE),--trace-jsonl $(PLOT_TRACE),)
 
 plot-test: ## Run plotting script sanity tests (stdlib unittest)
-	python3 -m unittest scripts/test_plot_experiments.py
+	python3 -m unittest scripts/test_plot_experiments.py scripts/test_plot_suite.py
 
 # ── Cleanup ──────────────────────────────────────────────────────────────
 clean: ## Remove build artifacts

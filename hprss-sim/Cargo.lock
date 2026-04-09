@@ -493,6 +493,7 @@ dependencies = [
  "hprss-workload",
  "rayon",
  "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -527,6 +528,7 @@ dependencies = [
 name = "hprss-workload"
 version = "0.1.0"
 dependencies = [
+ "csv",
  "hprss-types",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

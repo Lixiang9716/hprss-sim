@@ -81,15 +81,90 @@ pub enum Action {
     NoOp,
 }
 
+/// What causes a scheduler reevaluation callback to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReevaluationTrigger {
+    /// Periodic scheduler tick.
+    Periodic,
+    /// Reevaluation requested after a task/job arrival-like event.
+    TaskArrival,
+    /// Reevaluation requested after a job completion.
+    JobComplete,
+    /// Reevaluation requested after a preemption-point callback.
+    PreemptionPoint,
+    /// Reevaluation requested after a transfer completion.
+    TransferComplete,
+    /// Reevaluation requested after a mixed-criticality mode switch.
+    CriticalityChange,
+}
+
+/// Scheduler policy that controls reevaluation callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReevaluationPolicy {
+    /// Reevaluation callbacks are disabled.
+    Disabled,
+    /// Fixed periodic reevaluation tick.
+    Periodic { interval_ns: Nanos },
+    /// Event-triggered reevaluation with debounce interval.
+    Triggered { min_interval_ns: Nanos },
+    /// Support both periodic and event-triggered reevaluation.
+    ///
+    /// Semantics:
+    /// - periodic ticks are fixed-cadence (`interval_ns`, `2*interval_ns`, ... from t=0)
+    /// - periodic ticks are NOT reset by triggered callbacks
+    /// - triggered callbacks are debounced independently by `min_interval_ns`
+    /// - periodic and triggered reevaluations can both fire in one simulation run
+    Hybrid {
+        interval_ns: Nanos,
+        min_interval_ns: Nanos,
+    },
+}
+
+impl ReevaluationPolicy {
+    /// Returns periodic tick interval if this policy has periodic reevaluation enabled.
+    ///
+    /// Interval values of 0 are treated as disabled for safety.
+    pub fn periodic_interval(self) -> Option<Nanos> {
+        match self {
+            Self::Periodic { interval_ns } | Self::Hybrid { interval_ns, .. }
+                if interval_ns > 0 =>
+            {
+                Some(interval_ns)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns triggered debounce interval if this policy has triggered reevaluation enabled.
+    ///
+    /// Interval values of 0 are treated as disabled for safety.
+    pub fn triggered_min_interval(self) -> Option<Nanos> {
+        match self {
+            Self::Triggered { min_interval_ns }
+            | Self::Hybrid {
+                min_interval_ns, ..
+            } if min_interval_ns > 0 => Some(min_interval_ns),
+            _ => None,
+        }
+    }
+}
+
 /// The core scheduler interface.
 ///
-/// Implementations must be deterministic given the same SchedulerView.
+/// Determinism contract:
+/// - Given the same callback sequence and `SchedulerView` snapshots, implementations must
+///   return the same ordered `Action` list.
+/// - `Action` ordering is significant; the engine executes returned actions in-order.
+///
 /// This trait is shared between simulator and future real-time hardware.
 pub trait Scheduler: Send {
     /// Human-readable name of this scheduling algorithm
     fn name(&self) -> &str;
 
-    /// A new job has been released (periodic timer / sporadic event / DAG predecessor done)
+    /// A new job has become ready to run.
+    ///
+    /// This callback is used for both periodic/sporadic releases and replay/transfer-triggered
+    /// re-entry into scheduling.
     fn on_job_arrival(&mut self, job: &Job, task: &Task, view: &SchedulerView<'_>) -> Vec<Action>;
 
     /// A job completed execution on a device
@@ -100,7 +175,9 @@ pub trait Scheduler: Send {
         view: &SchedulerView<'_>,
     ) -> Vec<Action>;
 
-    /// A preemption checkpoint was reached (GPU kernel boundary / DSP DMA end)
+    /// A preemption checkpoint was reached (GPU kernel boundary / DSP DMA end).
+    ///
+    /// Called only when the referenced job is still running on `device_id`.
     fn on_preemption_point(
         &mut self,
         device_id: DeviceId,
@@ -115,4 +192,32 @@ pub trait Scheduler: Send {
         trigger_job: &Job,
         view: &SchedulerView<'_>,
     ) -> Vec<Action>;
+
+    /// A device is currently idle and can accept an eligible ready job.
+    ///
+    /// Used for deterministic redispatch after events such as mixed-criticality
+    /// mode switches where jobs may be dropped from running state.
+    ///
+    /// The engine only invokes this when the target device has at least one ready job.
+    fn on_device_idle(&mut self, _device_id: DeviceId, _view: &SchedulerView<'_>) -> Vec<Action> {
+        vec![Action::NoOp]
+    }
+
+    /// Reevaluation policy used by the engine to safely schedule callbacks.
+    ///
+    /// Default is disabled for backward compatibility.
+    fn reevaluation_policy(&self) -> ReevaluationPolicy {
+        ReevaluationPolicy::Disabled
+    }
+
+    /// Callback for periodic/event-triggered reevaluation.
+    ///
+    /// Default is no-op for backward compatibility.
+    fn on_reevaluation(
+        &mut self,
+        _trigger: ReevaluationTrigger,
+        _view: &SchedulerView<'_>,
+    ) -> Vec<Action> {
+        vec![Action::NoOp]
+    }
 }

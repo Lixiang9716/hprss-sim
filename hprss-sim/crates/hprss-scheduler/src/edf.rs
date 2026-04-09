@@ -139,4 +139,23 @@ impl Scheduler for EdfScheduler {
             vec![Action::NoOp]
         }
     }
+
+    fn on_device_idle(&mut self, device_id: DeviceId, view: &SchedulerView<'_>) -> Vec<Action> {
+        let next = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .and_then(|(_, q)| {
+                q.iter()
+                    .min_by_key(|j| (j.absolute_deadline, j.release_time, j.job_id.0))
+            });
+
+        match next {
+            Some(job) => vec![Action::Dispatch {
+                job_id: job.job_id,
+                device_id,
+            }],
+            None => vec![Action::NoOp],
+        }
+    }
 }

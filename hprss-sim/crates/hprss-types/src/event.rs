@@ -7,7 +7,7 @@
 
 use std::cmp::Ordering;
 
-use crate::{BusId, DeviceId, EdgeTransferId, JobId, Nanos, TaskId};
+use crate::{BusId, DeviceId, EdgeTransferId, JobId, Nanos, ReevaluationTrigger, TaskId};
 
 /// Simulation event
 #[derive(Debug, Clone)]
@@ -97,6 +97,12 @@ pub enum EventKind {
         expected_version: u64,
     },
 
+    /// Scheduler reevaluation callback (periodic or event-triggered).
+    SchedulerReevaluation {
+        generation: u64,
+        trigger: ReevaluationTrigger,
+    },
+
     /// End of simulation
     SimulationEnd,
 }
@@ -127,7 +133,10 @@ impl EventKind {
             Self::DeadlineCheck { .. } => false,
 
             // These events are never stale
-            Self::TaskArrival { .. } | Self::BusArbitration { .. } | Self::SimulationEnd => false,
+            Self::TaskArrival { .. }
+            | Self::BusArbitration { .. }
+            | Self::SchedulerReevaluation { .. }
+            | Self::SimulationEnd => false,
         }
     }
 }
@@ -186,5 +195,20 @@ mod tests {
         };
         assert!(!kind.is_stale(2));
         assert!(kind.is_stale(3));
+    }
+}
+
+#[cfg(test)]
+mod reevaluation_tests {
+    use super::*;
+
+    #[test]
+    fn scheduler_reevaluation_never_stale() {
+        let kind = EventKind::SchedulerReevaluation {
+            generation: 1,
+            trigger: crate::ReevaluationTrigger::Periodic,
+        };
+        assert!(!kind.is_stale(0));
+        assert!(!kind.is_stale(99));
     }
 }

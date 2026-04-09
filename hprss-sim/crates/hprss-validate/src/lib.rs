@@ -2,8 +2,15 @@
 //!
 //! Level 1: Liu-Layland bound, EDF optimality, Joseph-Pandya RTA
 //! Level 2: Small-scale exhaustive enumeration
-//! Level 3: CPU-only differential baseline (in-repo, pre-adapter phase)
+//! Level 3: Strict CPU-only differential validation via external SimSo adapter
 //! Level 4: Heterogeneous semantics validation
+//!
+//! ## Running Level 3 (SimSo differential)
+//! - Install Python dependency: `pip install simso`
+//! - Use the default adapter runner: `scripts/simso_adapter_runner.py`
+//! - Programmatic entry points:
+//!   - `run_level3_simso_differential` for one workload/scheduler pair
+//!   - `run_level3_simso_selected` for curated CPU-only fixtures
 
 pub mod analytic;
 pub mod differential;
@@ -30,7 +37,7 @@ pub use analytic::rta::{
 };
 pub use differential::cpu_only::{
     CpuOnlyDifferentialReport, CpuOnlyRunSummary, CpuOnlySchedulerConfig, CpuOnlyTask,
-    CpuOnlyWorkload, LEVEL3_SCOPE, run_cpu_only_differential, run_cpu_only_scheduler,
+    CpuOnlyWorkload, run_cpu_only_differential, run_cpu_only_scheduler,
     selected_cpu_only_workloads,
 };
 pub use differential::heft_repro::{
@@ -40,4 +47,9 @@ pub use differential::heft_repro::{
 pub use differential::paper_exp::{
     PAPER_EXP_SCOPE, PaperExperimentSummaryReport, PaperHeftMakespanRow, PaperShapeCurvePoint,
     run_paper_experiment_summary,
+};
+pub use differential::simso::{
+    LEVEL3_SCOPE, Level3SimsoDifferentialReport, SimsoAdapterConfig, SimsoAdapterError,
+    SimsoRunSummary, default_simso_adapter_runner, normalize_simso_output,
+    run_level3_simso_differential, run_level3_simso_selected,
 };

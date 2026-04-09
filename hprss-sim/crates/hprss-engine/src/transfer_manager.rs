@@ -26,6 +26,8 @@ struct ActiveTransfer {
     id: TransferId,
     owner_job_id: JobId,
     bus_id: Option<BusId>,
+    started_at: Nanos,
+    reason: TransferReason,
 }
 
 struct PendingTransfer {
@@ -35,6 +37,39 @@ struct PendingTransfer {
     data_size: u64,
     priority: u32,
     expected_version: u64,
+    enqueued_at: Nanos,
+    reason: TransferReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobTransferKind {
+    Dispatch,
+    Migration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferReason {
+    Job(JobTransferKind),
+    Edge,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransferStats {
+    pub total_transfer_time_ns: Nanos,
+    pub migration_transfer_time_ns: Nanos,
+    pub bus_wait_time_ns: Nanos,
+    pub bus_transfer_requests: u64,
+    pub bus_transfer_contentions: u64,
+}
+
+impl TransferStats {
+    pub fn bus_contention_ratio(self) -> f64 {
+        if self.bus_transfer_requests == 0 {
+            0.0
+        } else {
+            self.bus_transfer_contentions as f64 / self.bus_transfer_requests as f64
+        }
+    }
 }
 
 /// Manages data transfers between devices over interconnect links and shared buses.
@@ -43,6 +78,7 @@ pub struct TransferManager {
     buses: Vec<SharedBusConfig>,
     active_transfers: Vec<ActiveTransfer>,
     pending: HashMap<BusId, VecDeque<PendingTransfer>>,
+    stats: TransferStats,
 }
 
 impl TransferManager {
@@ -57,6 +93,7 @@ impl TransferManager {
             buses,
             active_transfers: Vec::new(),
             pending,
+            stats: TransferStats::default(),
         }
     }
 
@@ -90,6 +127,7 @@ impl TransferManager {
         from: DeviceId,
         to: DeviceId,
         data_size: u64,
+        transfer_kind: JobTransferKind,
         priority: u32,
         now: Nanos,
         expected_version: u64,
@@ -100,6 +138,7 @@ impl TransferManager {
             from,
             to,
             data_size,
+            TransferReason::Job(transfer_kind),
             priority,
             now,
             expected_version,
@@ -124,6 +163,7 @@ impl TransferManager {
             from,
             to,
             data_size,
+            TransferReason::Edge,
             priority,
             now,
             expected_version,
@@ -138,6 +178,7 @@ impl TransferManager {
         from: DeviceId,
         to: DeviceId,
         data_size: u64,
+        reason: TransferReason,
         priority: u32,
         now: Nanos,
         expected_version: u64,
@@ -158,23 +199,21 @@ impl TransferManager {
         match ic.shared_bus {
             None => {
                 // Dedicated link — start immediately
-                self.active_transfers.push(ActiveTransfer {
-                    id: transfer_id,
-                    owner_job_id,
-                    bus_id: None,
-                });
+                self.start_transfer(transfer_id, owner_job_id, None, reason, now, 0);
                 vec![ScheduledEvent {
                     time: now + transfer_time,
                     kind: completion_event(transfer_id, owner_job_id, expected_version, to),
                 }]
             }
             Some(bus_id) => {
+                self.stats.bus_transfer_requests += 1;
                 let bus_busy = self
                     .active_transfers
                     .iter()
                     .any(|at| at.bus_id == Some(bus_id));
 
                 if bus_busy {
+                    self.stats.bus_transfer_contentions += 1;
                     // Queue the transfer
                     self.pending
                         .entry(bus_id)
@@ -186,15 +225,13 @@ impl TransferManager {
                             data_size,
                             priority,
                             expected_version,
+                            enqueued_at: now,
+                            reason,
                         });
                     vec![]
                 } else {
                     // Bus free — start immediately
-                    self.active_transfers.push(ActiveTransfer {
-                        id: transfer_id,
-                        owner_job_id,
-                        bus_id: Some(bus_id),
-                    });
+                    self.start_transfer(transfer_id, owner_job_id, Some(bus_id), reason, now, 0);
                     vec![ScheduledEvent {
                         time: now + transfer_time,
                         kind: completion_event(transfer_id, owner_job_id, expected_version, to),
@@ -232,6 +269,7 @@ impl TransferManager {
             Some(i) => self.active_transfers.swap_remove(i),
             None => return vec![],
         };
+        self.account_transfer_service(&completed, now);
 
         // If the transfer was on a shared bus, start the next pending transfer
         match completed.bus_id {
@@ -268,6 +306,7 @@ impl TransferManager {
             return vec![];
         };
         let cancelled = self.active_transfers.swap_remove(idx);
+        self.account_transfer_service(&cancelled, now);
         match cancelled.bus_id {
             Some(bus_id) => self.start_next_pending(bus_id, now),
             None => vec![],
@@ -316,11 +355,15 @@ impl TransferManager {
         match ic {
             Some(ic) => {
                 let transfer_time = Self::calculate_transfer_time(&ic, next.data_size);
-                self.active_transfers.push(ActiveTransfer {
-                    id: next.id,
-                    owner_job_id: next.owner_job_id,
-                    bus_id: Some(bus_id),
-                });
+                let queue_wait = now.saturating_sub(next.enqueued_at);
+                self.start_transfer(
+                    next.id,
+                    next.owner_job_id,
+                    Some(bus_id),
+                    next.reason,
+                    now,
+                    queue_wait,
+                );
                 vec![ScheduledEvent {
                     time: now + transfer_time,
                     kind: completion_event(
@@ -333,6 +376,41 @@ impl TransferManager {
             }
             None => vec![],
         }
+    }
+
+    fn start_transfer(
+        &mut self,
+        transfer_id: TransferId,
+        owner_job_id: JobId,
+        bus_id: Option<BusId>,
+        reason: TransferReason,
+        now: Nanos,
+        bus_wait_ns: Nanos,
+    ) {
+        self.active_transfers.push(ActiveTransfer {
+            id: transfer_id,
+            owner_job_id,
+            bus_id,
+            started_at: now,
+            reason,
+        });
+        self.stats.bus_wait_time_ns = self.stats.bus_wait_time_ns.saturating_add(bus_wait_ns);
+    }
+
+    fn account_transfer_service(&mut self, transfer: &ActiveTransfer, now: Nanos) {
+        let elapsed = now.saturating_sub(transfer.started_at);
+        self.stats.total_transfer_time_ns =
+            self.stats.total_transfer_time_ns.saturating_add(elapsed);
+        if transfer.reason == TransferReason::Job(JobTransferKind::Migration) {
+            self.stats.migration_transfer_time_ns = self
+                .stats
+                .migration_transfer_time_ns
+                .saturating_add(elapsed);
+        }
+    }
+
+    pub fn stats(&self) -> TransferStats {
+        self.stats
     }
 }
 
@@ -390,7 +468,16 @@ mod tests {
         let ic = dedicated_interconnect(cpu, gpu);
         let mut mgr = TransferManager::new(vec![ic], vec![]);
 
-        let events = mgr.initiate_transfer(JobId(1), cpu, gpu, 1000, 0, 500, 1);
+        let events = mgr.initiate_transfer(
+            JobId(1),
+            cpu,
+            gpu,
+            1000,
+            JobTransferKind::Dispatch,
+            0,
+            500,
+            1,
+        );
 
         assert_eq!(events.len(), 1);
         // latency=100 + ceil(1000/2.0)=500 → transfer_time=600
@@ -427,13 +514,31 @@ mod tests {
         let mut mgr = TransferManager::new(vec![ic1, ic2], vec![bus_cfg]);
 
         // First transfer starts immediately
-        let ev1 = mgr.initiate_transfer(JobId(1), cpu, gpu, 500, 0, 1000, 1);
+        let ev1 = mgr.initiate_transfer(
+            JobId(1),
+            cpu,
+            gpu,
+            500,
+            JobTransferKind::Dispatch,
+            0,
+            1000,
+            1,
+        );
         assert_eq!(ev1.len(), 1);
         // latency=200 + ceil(500/1.0)=500 → time = 1000 + 700 = 1700
         assert_eq!(ev1[0].time, 1700);
 
         // Second transfer is queued (bus busy)
-        let ev2 = mgr.initiate_transfer(JobId(2), cpu, dsp, 300, 0, 1050, 1);
+        let ev2 = mgr.initiate_transfer(
+            JobId(2),
+            cpu,
+            dsp,
+            300,
+            JobTransferKind::Dispatch,
+            0,
+            1050,
+            1,
+        );
         assert!(ev2.is_empty());
 
         // Complete first transfer → second should start
@@ -456,7 +561,16 @@ mod tests {
     fn test_no_interconnect_instant() {
         let mut mgr = TransferManager::new(vec![], vec![]);
 
-        let events = mgr.initiate_transfer(JobId(5), DeviceId(0), DeviceId(3), 4096, 0, 2000, 1);
+        let events = mgr.initiate_transfer(
+            JobId(5),
+            DeviceId(0),
+            DeviceId(3),
+            4096,
+            JobTransferKind::Dispatch,
+            0,
+            2000,
+            1,
+        );
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].time, 2000); // instant
@@ -514,5 +628,95 @@ mod tests {
             }
             other => panic!("unexpected event kind: {other:?}"),
         }
+    }
+
+    #[test]
+    fn transfer_stats_track_migration_and_bus_contention() {
+        let cpu = DeviceId(0);
+        let gpu = DeviceId(1);
+        let dsp = DeviceId(2);
+        let bus = BusId(0);
+        let bus_cfg = SharedBusConfig {
+            id: bus,
+            name: "system_bus".to_string(),
+            total_bandwidth_bytes_per_ns: 1.0,
+            arbitration: BusArbitration::RoundRobin,
+        };
+        let mut mgr = TransferManager::new(
+            vec![
+                shared_bus_interconnect(cpu, gpu, bus),
+                shared_bus_interconnect(cpu, dsp, bus),
+            ],
+            vec![bus_cfg],
+        );
+
+        let first = mgr.initiate_transfer(
+            JobId(1),
+            cpu,
+            gpu,
+            100,
+            JobTransferKind::Dispatch,
+            0,
+            1000,
+            1,
+        );
+        assert_eq!(first.len(), 1);
+        let second = mgr.initiate_transfer(
+            JobId(2),
+            cpu,
+            dsp,
+            200,
+            JobTransferKind::Migration,
+            0,
+            1010,
+            1,
+        );
+        assert!(second.is_empty());
+
+        let start_second = mgr.on_transfer_complete(JobId(1), first[0].time);
+        assert_eq!(start_second.len(), 1);
+        let finish_second = mgr.on_transfer_complete(JobId(2), start_second[0].time);
+        assert!(finish_second.is_empty());
+
+        let stats = mgr.stats();
+        assert_eq!(stats.bus_transfer_requests, 2);
+        assert_eq!(stats.bus_transfer_contentions, 1);
+        assert!(stats.total_transfer_time_ns >= stats.migration_transfer_time_ns);
+        assert!(stats.migration_transfer_time_ns > 0);
+        assert!(stats.bus_wait_time_ns > 0);
+        assert!((stats.bus_contention_ratio() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn canceling_active_transfer_counts_only_elapsed_service_time() {
+        let cpu = DeviceId(0);
+        let gpu = DeviceId(1);
+        let mut mgr = TransferManager::new(vec![dedicated_interconnect(cpu, gpu)], vec![]);
+
+        let events = mgr.initiate_transfer(
+            JobId(9),
+            cpu,
+            gpu,
+            1000,
+            JobTransferKind::Migration,
+            0,
+            1_000,
+            1,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].time, 1_600);
+
+        let follow_up = mgr.cancel_job(JobId(9), 1_200);
+        assert!(follow_up.is_empty());
+
+        let stats = mgr.stats();
+        assert_eq!(
+            stats.total_transfer_time_ns, 200,
+            "only elapsed service time should be counted for canceled transfers"
+        );
+        assert_eq!(
+            stats.migration_transfer_time_ns, 200,
+            "migration transfer stats should also use elapsed service time"
+        );
     }
 }

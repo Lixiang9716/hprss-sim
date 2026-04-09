@@ -3,7 +3,21 @@
 //! Tracks: schedulability ratio, deadline miss rate, response time,
 //! device utilization, end-to-end latency.
 
-use hprss_types::{JobId, Nanos, TaskId, task::TaskChain};
+use hprss_types::{DeviceId, JobId, Nanos, TaskId, task::TaskChain};
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
+pub struct DeviceUtilization {
+    pub device_id: DeviceId,
+    pub busy_ns: Nanos,
+    pub utilization: f64,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq, Default)]
+pub struct BlockingBreakdown {
+    pub transfer_ns: Nanos,
+    pub migration_ns: Nanos,
+    pub bus_wait_ns: Nanos,
+}
 
 /// Collects simulation metrics
 #[derive(Debug, Default)]
@@ -106,6 +120,34 @@ impl MetricsCollector {
         Some(total_response as f64 / self.completions.len() as f64)
     }
 
+    /// Worst (maximum) response time across completed jobs, in nanoseconds.
+    pub fn worst_response_time(&self) -> Option<Nanos> {
+        self.completions
+            .iter()
+            .map(|c| c.completion_time.saturating_sub(c.release_time))
+            .max()
+    }
+
+    /// Per-device utilization over the observed makespan window.
+    pub fn per_device_utilization(
+        &self,
+        busy_by_device: &[(DeviceId, Nanos)],
+    ) -> Vec<DeviceUtilization> {
+        let makespan = self.makespan().unwrap_or(0);
+        busy_by_device
+            .iter()
+            .map(|(device_id, busy_ns)| DeviceUtilization {
+                device_id: *device_id,
+                busy_ns: *busy_ns,
+                utilization: if makespan == 0 {
+                    0.0
+                } else {
+                    *busy_ns as f64 / makespan as f64
+                },
+            })
+            .collect()
+    }
+
     /// Serialize completion/miss timeline into JSON-lines text.
     pub fn to_jsonl(&self) -> Result<String, serde_json::Error> {
         let mut rows = Vec::new();
@@ -206,6 +248,21 @@ mod tests {
 
         assert_eq!(m.makespan(), Some(160));
         assert_eq!(m.avg_response_time(), Some(125.0));
+        assert_eq!(m.worst_response_time(), Some(150));
+    }
+
+    #[test]
+    fn per_device_utilization_uses_makespan_window() {
+        let mut m = MetricsCollector::new();
+        m.record_job_release();
+        m.record_job_release();
+        m.record_completion(JobId(0), TaskId(0), 0, 100);
+        m.record_completion(JobId(1), TaskId(1), 0, 200);
+
+        let per_device = m.per_device_utilization(&[(DeviceId(0), 100), (DeviceId(1), 50)]);
+        assert_eq!(per_device.len(), 2);
+        assert!((per_device[0].utilization - 0.5).abs() < f64::EPSILON);
+        assert!((per_device[1].utilization - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -1,0 +1,28 @@
+{
+  "tasks": [
+    {
+      "task_id": 0,
+      "name": "cpu-task",
+      "priority": 1,
+      "deadline_ns": 50000,
+      "criticality": "Lo",
+      "affinity": ["Cpu"],
+      "exec_hints": [{ "device_type": "Cpu", "wcet_ns": 30000 }],
+      "data_size": 0
+    },
+    {
+      "task_id": 1,
+      "name": "gpu-task",
+      "priority": 2,
+      "deadline_ns": 40000,
+      "criticality": "Lo",
+      "affinity": ["Gpu"],
+      "exec_hints": [{ "device_type": "Gpu", "wcet_ns": 20000 }],
+      "data_size": 1024
+    }
+  ],
+  "jobs": [
+    { "task_id": 1, "release_ns": 100000, "actual_exec_ns": 15000 },
+    { "task_id": 0, "release_ns": 0, "actual_exec_ns": 20000 }
+  ]
+}

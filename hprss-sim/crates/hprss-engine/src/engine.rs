@@ -3,11 +3,12 @@
 use std::collections::BinaryHeap;
 use std::path::Path;
 
-use hprss_metrics::MetricsCollector;
+use hprss_devices::{DispatchTimingInput, PreemptionCheckInput, VirtualDeviceModel};
+use hprss_metrics::{BlockingBreakdown, DeviceUtilization, MetricsCollector};
 use hprss_types::{
     Action, CriticalityLevel, DeviceId, Event, EventKind, InterconnectConfig, Job, JobId, JobState,
-    Nanos, Scheduler, SharedBusConfig, Task, TaskId,
-    device::{DeviceConfig, PreemptionModel},
+    Nanos, ReevaluationTrigger, Scheduler, SharedBusConfig, Task, TaskId,
+    device::DeviceConfig,
     task::{ArrivalModel, DagTask, DeviceType, ExecutionTimeModel},
 };
 use rand::{Rng, SeedableRng};
@@ -16,7 +17,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::{
     dag_tracker::DagTracker,
     device_manager::DeviceManager,
-    transfer_manager::{ScheduledEvent, TransferManager},
+    transfer_manager::{JobTransferKind, ScheduledEvent, TransferManager},
 };
 
 /// Simulation engine configuration
@@ -58,6 +59,22 @@ pub struct SimEngine {
     metrics: MetricsCollector,
     /// Events processed counter
     events_processed: u64,
+    /// Cumulative running (busy) wall-time per device.
+    device_busy_time_ns: Vec<Nanos>,
+    /// Number of successful preemptions performed by the engine.
+    preemption_count: u64,
+    /// Number of migrations performed by the engine.
+    migration_count: u64,
+    /// Last scheduled triggered reevaluation event, tracked for debounce/invalidation.
+    pending_triggered_reevaluation: Option<(u64, Nanos)>,
+    /// Last scheduled periodic reevaluation event.
+    pending_periodic_reevaluation: Option<(u64, Nanos)>,
+    /// Next periodic reevaluation tick timestamp.
+    next_periodic_at: Option<Nanos>,
+    /// Monotonic generation for triggered reevaluation events.
+    triggered_reevaluation_generation: u64,
+    /// Monotonic generation for periodic reevaluation events.
+    periodic_reevaluation_generation: u64,
 }
 
 impl SimEngine {
@@ -69,6 +86,7 @@ impl SimEngine {
     ) -> Self {
         let seed = config.seed;
         Self {
+            device_busy_time_ns: vec![0; devices.len()],
             config,
             now: 0,
             event_queue: BinaryHeap::new(),
@@ -83,6 +101,13 @@ impl SimEngine {
             rng: ChaCha8Rng::seed_from_u64(seed),
             metrics: MetricsCollector::new(),
             events_processed: 0,
+            preemption_count: 0,
+            migration_count: 0,
+            pending_triggered_reevaluation: None,
+            pending_periodic_reevaluation: None,
+            next_periodic_at: None,
+            triggered_reevaluation_generation: 0,
+            periodic_reevaluation_generation: 0,
         }
     }
 
@@ -171,6 +196,7 @@ impl SimEngine {
     pub fn run(&mut self, scheduler: &mut dyn Scheduler) {
         // Schedule simulation end
         self.schedule_event(self.config.duration_ns, EventKind::SimulationEnd);
+        self.initialize_periodic_reevaluation(scheduler);
 
         tracing::info!(
             "Simulation starting: duration={}ns, seed={}",
@@ -214,21 +240,37 @@ impl SimEngine {
                 }
                 EventKind::TaskArrival { task_id, job_id } => {
                     self.handle_task_arrival(task_id, job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::TaskArrival,
+                    );
                 }
                 EventKind::JobComplete {
                     job_id, device_id, ..
                 } => {
                     self.handle_job_complete(job_id, device_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::JobComplete,
+                    );
                 }
                 EventKind::PreemptionPoint {
                     device_id, job_id, ..
                 } => {
                     self.handle_preemption_point(device_id, job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::PreemptionPoint,
+                    );
                 }
                 EventKind::TransferComplete {
                     job_id, device_id, ..
                 } => {
                     self.handle_transfer_complete(job_id, device_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::TransferComplete,
+                    );
                 }
                 EventKind::EdgeTransferComplete {
                     edge_id, device_id, ..
@@ -240,35 +282,20 @@ impl SimEngine {
                     self.schedule_transfer_events(events);
                 }
                 EventKind::DeadlineCheck { job_id, .. } => {
-                    if let Some(job) = self.get_job(job_id)
-                        && job.has_missed_deadline(self.now)
-                    {
-                        tracing::warn!(
-                            "t={}: DEADLINE MISS job={:?} deadline={}",
-                            self.now,
-                            job_id,
-                            job.absolute_deadline
-                        );
-                        self.metrics
-                            .record_deadline_miss(job_id, job.task_id, self.now);
-                        if let Some(job_mut) = self.get_job_mut(job_id) {
-                            job_mut.transition(JobState::DeadlineMissed);
-                            job_mut.exec_start_time = None;
-                        }
-                        self.device_mgr.remove_job_from_all_queues(job_id);
-                        if let Some(dev) = self.device_mgr.devices().iter().find_map(|d| {
-                            if self.device_mgr.running_job(d.id) == Some(job_id) {
-                                Some(d.id)
-                            } else {
-                                None
-                            }
-                        }) {
-                            self.device_mgr.clear_running(dev);
-                        }
-                    }
+                    self.handle_deadline_check(job_id);
                 }
                 EventKind::BudgetOverrun { job_id, .. } => {
                     self.handle_budget_overrun(job_id, scheduler);
+                    self.schedule_triggered_reevaluation(
+                        scheduler,
+                        ReevaluationTrigger::CriticalityChange,
+                    );
+                }
+                EventKind::SchedulerReevaluation {
+                    generation,
+                    trigger,
+                } => {
+                    self.handle_reevaluation(generation, trigger, scheduler);
                 }
             }
         }
@@ -300,19 +327,7 @@ impl SimEngine {
             ArrivalModel::Aperiodic => None,
         });
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let task = &self.task_registry[task_id.0 as usize];
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_arrival(job, task, &view)
-        };
+        let actions = self.scheduler_on_job_arrival(scheduler, job_id, task_id);
         self.execute_actions(actions, false);
 
         if let Some(release_time) = next_release {
@@ -340,6 +355,7 @@ impl SimEngine {
 
         let speed_factor = self.device_mgr.device(device_id).speed_factor;
         let now = self.now;
+        let mut busy_elapsed = 0;
         if let Some(job) = self.get_job_mut(job_id) {
             if job.state != JobState::Running {
                 return;
@@ -348,6 +364,7 @@ impl SimEngine {
                 let wall_elapsed = now.saturating_sub(start);
                 let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
                 job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             if let Some(actual_exec_ns) = job.actual_exec_ns {
                 job.executed_ns = actual_exec_ns;
@@ -361,20 +378,13 @@ impl SimEngine {
         } else {
             return;
         }
+        self.device_busy_time_ns[device_id.0 as usize] =
+            self.device_busy_time_ns[device_id.0 as usize].saturating_add(busy_elapsed);
 
         self.schedule_dag_outgoing_transfers(job_id, device_id);
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_complete(job, device_id, &view)
+        let Some(actions) = self.scheduler_on_job_complete(scheduler, job_id, device_id) else {
+            return;
         };
         self.execute_actions(actions, false);
     }
@@ -396,31 +406,16 @@ impl SimEngine {
             return;
         }
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let running_job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_preemption_point(device_id, running_job, &view)
+        let Some(actions) = self.scheduler_on_preemption_point(scheduler, device_id, job_id) else {
+            return;
         };
 
         self.execute_actions(actions, true);
 
         // If no preemption happened, reschedule next preemption point for the same running job.
         if self.device_mgr.running_job(device_id) == Some(job_id) {
-            let interval = match self.device_mgr.device(device_id).preemption {
-                PreemptionModel::LimitedPreemptive { granularity_ns } => Some(granularity_ns),
-                PreemptionModel::InterruptLevel {
-                    dma_non_preemptive_ns,
-                    ..
-                } => Some(dma_non_preemptive_ns),
-                PreemptionModel::FullyPreemptive | PreemptionModel::NonPreemptive { .. } => None,
-            };
+            let model = VirtualDeviceModel::from_device(self.device_mgr.device(device_id));
+            let interval = model.preemption_point_interval_ns();
             if let Some(interval_ns) = interval
                 && let Some(job) = self.get_job(job_id)
             {
@@ -466,19 +461,7 @@ impl SimEngine {
         }
 
         // Transfer completion re-enters the scheduling loop (arrival-like callback).
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let task = &self.task_registry[task_id.0 as usize];
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_job_arrival(job, task, &view)
-        };
+        let actions = self.scheduler_on_job_arrival(scheduler, job_id, task_id);
         self.execute_actions(actions, false);
     }
 
@@ -517,20 +500,198 @@ impl SimEngine {
         }
         self.criticality_level = CriticalityLevel::Hi;
 
-        let actions = {
-            self.device_mgr
-                .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
-            let trigger_job = match self.get_job(job_id) {
-                Some(job) => job,
-                None => return,
-            };
-            let view = self
-                .device_mgr
-                .scheduler_view(self.now, self.criticality_level);
-            scheduler.on_criticality_change(CriticalityLevel::Hi, trigger_job, &view)
+        let Some(actions) =
+            self.scheduler_on_criticality_change(scheduler, CriticalityLevel::Hi, job_id)
+        else {
+            return;
         };
         self.execute_actions(actions, false);
         self.drop_lo_critical_jobs();
+        self.dispatch_after_criticality_switch(scheduler);
+    }
+
+    fn handle_deadline_check(&mut self, job_id: JobId) {
+        let Some(job) = self.get_job(job_id) else {
+            return;
+        };
+        if !job.has_missed_deadline(self.now) {
+            return;
+        }
+
+        tracing::warn!(
+            "t={}: DEADLINE MISS job={:?} deadline={}",
+            self.now,
+            job_id,
+            job.absolute_deadline
+        );
+        self.metrics
+            .record_deadline_miss(job_id, job.task_id, self.now);
+
+        let running_dev = self.device_mgr.devices().iter().find_map(|d| {
+            if self.device_mgr.running_job(d.id) == Some(job_id) {
+                Some(d.id)
+            } else {
+                None
+            }
+        });
+        if let Some(dev) = running_dev {
+            self.record_running_elapsed(job_id, dev);
+        }
+        if let Some(job_mut) = self.get_job_mut(job_id) {
+            job_mut.transition(JobState::DeadlineMissed);
+            job_mut.exec_start_time = None;
+        }
+        self.device_mgr.remove_job_from_all_queues(job_id);
+        if let Some(dev) = running_dev {
+            self.device_mgr.clear_running(dev);
+        }
+    }
+
+    fn dispatch_after_criticality_switch(&mut self, scheduler: &mut dyn Scheduler) {
+        let device_ids: Vec<DeviceId> = self.device_mgr.devices().iter().map(|d| d.id).collect();
+        for device_id in device_ids {
+            if self.device_mgr.running_job(device_id).is_some() {
+                continue;
+            }
+
+            let Some(actions) = self.scheduler_on_device_idle(scheduler, device_id) else {
+                continue;
+            };
+            self.execute_actions(actions, false);
+        }
+    }
+
+    fn handle_reevaluation(
+        &mut self,
+        generation: u64,
+        trigger: ReevaluationTrigger,
+        scheduler: &mut dyn Scheduler,
+    ) {
+        match trigger {
+            ReevaluationTrigger::Periodic => {
+                if self.pending_periodic_reevaluation != Some((generation, self.now)) {
+                    return;
+                }
+                self.pending_periodic_reevaluation = None;
+            }
+            ReevaluationTrigger::TaskArrival
+            | ReevaluationTrigger::JobComplete
+            | ReevaluationTrigger::PreemptionPoint
+            | ReevaluationTrigger::TransferComplete
+            | ReevaluationTrigger::CriticalityChange => {
+                if self.pending_triggered_reevaluation != Some((generation, self.now)) {
+                    return;
+                }
+                self.pending_triggered_reevaluation = None;
+            }
+        }
+
+        let actions = self.scheduler_on_reevaluation(scheduler, trigger);
+        self.execute_actions(actions, false);
+        if trigger == ReevaluationTrigger::Periodic {
+            self.schedule_next_periodic_reevaluation(scheduler);
+        }
+    }
+
+    fn scheduler_on_job_arrival(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        job_id: JobId,
+        task_id: TaskId,
+    ) -> Vec<Action> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let Some(job) = self.get_job(job_id) else {
+            return vec![Action::NoOp];
+        };
+        // Behavior-preservation intent: arrival path historically relied on task-registry
+        // invariants and must fail loudly rather than silently skipping scheduler callbacks.
+        let task = self.task(task_id).unwrap_or_else(|| {
+            panic!(
+                "invariant violation: missing task metadata for arrival callback (task_id={}, job_id={})",
+                task_id.0, job_id.0
+            )
+        });
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        scheduler.on_job_arrival(job, task, &view)
+    }
+
+    fn scheduler_on_job_complete(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        job_id: JobId,
+        device_id: DeviceId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let job = self.get_job(job_id)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_job_complete(job, device_id, &view))
+    }
+
+    fn scheduler_on_preemption_point(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        device_id: DeviceId,
+        job_id: JobId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let running_job = self.get_job(job_id)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_preemption_point(device_id, running_job, &view))
+    }
+
+    fn scheduler_on_criticality_change(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        new_level: CriticalityLevel,
+        trigger_job: JobId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let trigger_job = self.get_job(trigger_job)?;
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        Some(scheduler.on_criticality_change(new_level, trigger_job, &view))
+    }
+
+    fn scheduler_on_device_idle(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        device_id: DeviceId,
+    ) -> Option<Vec<Action>> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        let has_ready = view
+            .ready_queues
+            .iter()
+            .find(|(did, _)| *did == device_id)
+            .is_some_and(|(_, queue)| !queue.is_empty());
+        has_ready.then(|| scheduler.on_device_idle(device_id, &view))
+    }
+
+    fn scheduler_on_reevaluation(
+        &mut self,
+        scheduler: &mut dyn Scheduler,
+        trigger: ReevaluationTrigger,
+    ) -> Vec<Action> {
+        self.device_mgr
+            .rebuild_view_data(self.now, &self.jobs, &self.task_registry);
+        let view = self
+            .device_mgr
+            .scheduler_view(self.now, self.criticality_level);
+        scheduler.on_reevaluation(trigger, &view)
     }
 
     fn execute_actions(&mut self, actions: Vec<Action>, at_preemption_point: bool) {
@@ -542,14 +703,12 @@ impl SimEngine {
                     by,
                     device_id,
                 } => {
-                    let allow_now = match self.device_mgr.device(device_id).preemption {
-                        PreemptionModel::FullyPreemptive => true,
-                        PreemptionModel::LimitedPreemptive { .. }
-                        | PreemptionModel::InterruptLevel { .. } => at_preemption_point,
-                        PreemptionModel::NonPreemptive { .. } => false,
-                    };
-                    if allow_now {
-                        self.preempt_job(victim, by, device_id);
+                    let model = VirtualDeviceModel::from_device(self.device_mgr.device(device_id));
+                    let outcome = model.evaluate_preemption(PreemptionCheckInput {
+                        at_preemption_point,
+                    });
+                    if outcome.allows_preemption_now() {
+                        self.preempt_job(victim, by, device_id, outcome.penalty_ns);
                     } else {
                         self.enqueue_job(by, device_id);
                     }
@@ -563,6 +722,15 @@ impl SimEngine {
     }
 
     fn dispatch_job(&mut self, job_id: JobId, device_id: DeviceId) {
+        self.dispatch_job_with_delay(job_id, device_id, 0);
+    }
+
+    fn dispatch_job_with_delay(
+        &mut self,
+        job_id: JobId,
+        device_id: DeviceId,
+        pre_dispatch_penalty_ns: Nanos,
+    ) {
         let Some(job_view) = self.get_job(job_id) else {
             return;
         };
@@ -587,7 +755,7 @@ impl SimEngine {
         let target_type = target_device.device_type;
         let speed_factor = target_device.speed_factor;
         let context_switch_ns = target_device.context_switch_ns;
-        let preemption = target_device.preemption.clone();
+        let virtual_model = VirtualDeviceModel::from_device(target_device);
         let Some(resolved_exec_ns) =
             sample_exec_time_for_device(&task, target_type, self.criticality_level, &mut self.rng)
         else {
@@ -632,6 +800,7 @@ impl SimEngine {
                 source,
                 device_id,
                 task.data_size,
+                JobTransferKind::Dispatch,
                 priority,
                 self.now,
                 expected_version,
@@ -665,9 +834,14 @@ impl SimEngine {
         self.device_mgr.set_running(device_id, job_id);
 
         let wall_exec_ns = work_to_wall(remaining_work, speed_factor);
+        let dispatch_timing = virtual_model.evaluate_dispatch_timing(DispatchTimingInput {
+            now_ns: now,
+            context_switch_ns,
+            pre_dispatch_penalty_ns,
+            remaining_exec_wall_ns: wall_exec_ns,
+        });
         self.schedule_event(
-            now.saturating_add(context_switch_ns)
-                .saturating_add(wall_exec_ns),
+            dispatch_timing.completion_time_ns,
             EventKind::JobComplete {
                 job_id,
                 expected_version,
@@ -689,35 +863,25 @@ impl SimEngine {
             );
         }
 
-        match preemption {
-            PreemptionModel::LimitedPreemptive { granularity_ns } => {
-                self.schedule_event(
-                    now.saturating_add(granularity_ns),
-                    EventKind::PreemptionPoint {
-                        device_id,
-                        job_id,
-                        expected_version,
-                    },
-                );
-            }
-            PreemptionModel::InterruptLevel {
-                dma_non_preemptive_ns,
-                ..
-            } => {
-                self.schedule_event(
-                    now.saturating_add(dma_non_preemptive_ns),
-                    EventKind::PreemptionPoint {
-                        device_id,
-                        job_id,
-                        expected_version,
-                    },
-                );
-            }
-            PreemptionModel::FullyPreemptive | PreemptionModel::NonPreemptive { .. } => {}
+        if let Some(next_preemption_point_ns) = dispatch_timing.next_preemption_point_ns {
+            self.schedule_event(
+                next_preemption_point_ns,
+                EventKind::PreemptionPoint {
+                    device_id,
+                    job_id,
+                    expected_version,
+                },
+            );
         }
     }
 
-    fn preempt_job(&mut self, victim: JobId, by: JobId, device_id: DeviceId) {
+    fn preempt_job(
+        &mut self,
+        victim: JobId,
+        by: JobId,
+        device_id: DeviceId,
+        dispatch_penalty_ns: Nanos,
+    ) {
         if self.device_mgr.running_job(device_id) != Some(victim) {
             self.enqueue_job(by, device_id);
             return;
@@ -725,6 +889,7 @@ impl SimEngine {
 
         let speed_factor = self.device_mgr.device(device_id).speed_factor;
         let now = self.now;
+        let mut busy_elapsed = 0;
         let victim_priority = {
             let Some(victim_job) = self.get_job_mut(victim) else {
                 return;
@@ -737,15 +902,19 @@ impl SimEngine {
                 let work_done =
                     wall_to_work(wall_elapsed, speed_factor).min(victim_job.remaining_ns());
                 victim_job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             victim_job.exec_start_time = None;
             victim_job.transition(JobState::Suspended);
             victim_job.effective_priority
         };
+        self.device_busy_time_ns[device_id.0 as usize] =
+            self.device_busy_time_ns[device_id.0 as usize].saturating_add(busy_elapsed);
 
         self.device_mgr.clear_running(device_id);
         self.device_mgr.enqueue(device_id, victim, victim_priority);
-        self.dispatch_job(by, device_id);
+        self.preemption_count = self.preemption_count.saturating_add(1);
+        self.dispatch_job_with_delay(by, device_id, dispatch_penalty_ns);
     }
 
     fn enqueue_job(&mut self, job_id: JobId, device_id: DeviceId) {
@@ -773,6 +942,7 @@ impl SimEngine {
             .iter()
             .find_map(|d| (self.device_mgr.running_job(d.id) == Some(job_id)).then_some(d.id));
         if let Some(dev) = running_device {
+            self.record_running_elapsed(job_id, dev);
             self.device_mgr.clear_running(dev);
         }
 
@@ -796,6 +966,7 @@ impl SimEngine {
             .and_then(|job| self.task(job.task_id).map(|t| t.data_size))
             .unwrap_or(0);
 
+        let mut busy_elapsed = 0;
         let (priority, expected_version, data_size) = {
             let Some(job) = self.get_job_mut(job_id) else {
                 return;
@@ -807,12 +978,15 @@ impl SimEngine {
                 let wall_elapsed = now.saturating_sub(start);
                 let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
                 job.record_progress(work_done);
+                busy_elapsed = wall_elapsed;
             }
             job.exec_start_time = None;
             job.assigned_device = Some(to);
             job.transition(JobState::Migrating);
             (job.effective_priority, job.version, data_size)
         };
+        self.device_busy_time_ns[from.0 as usize] =
+            self.device_busy_time_ns[from.0 as usize].saturating_add(busy_elapsed);
         if was_running {
             self.device_mgr.clear_running(from);
         }
@@ -822,11 +996,13 @@ impl SimEngine {
             from,
             to,
             data_size,
+            JobTransferKind::Migration,
             priority,
             self.now,
             expected_version,
         );
         self.schedule_transfer_events(events);
+        self.migration_count = self.migration_count.saturating_add(1);
     }
 
     fn drop_lo_critical_jobs(&mut self) {
@@ -880,6 +1056,94 @@ impl SimEngine {
     fn schedule_transfer_events(&mut self, events: Vec<ScheduledEvent>) {
         for ev in events {
             self.schedule_event(ev.time, ev.kind);
+        }
+    }
+
+    fn schedule_triggered_reevaluation(
+        &mut self,
+        scheduler: &dyn Scheduler,
+        trigger: ReevaluationTrigger,
+    ) {
+        let Some(min_interval_ns) = scheduler.reevaluation_policy().triggered_min_interval() else {
+            return;
+        };
+        let time = self.now.saturating_add(min_interval_ns.max(1));
+        if time > self.config.duration_ns {
+            return;
+        }
+        if let Some((_, pending_time)) = self.pending_triggered_reevaluation
+            && pending_time <= time
+        {
+            return;
+        }
+
+        self.triggered_reevaluation_generation =
+            self.triggered_reevaluation_generation.saturating_add(1);
+        let generation = self.triggered_reevaluation_generation;
+        self.pending_triggered_reevaluation = Some((generation, time));
+        self.schedule_event(
+            time,
+            EventKind::SchedulerReevaluation {
+                generation,
+                trigger,
+            },
+        );
+    }
+
+    fn initialize_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
+        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
+            self.next_periodic_at = None;
+            self.pending_periodic_reevaluation = None;
+            return;
+        };
+        let first_tick = interval_ns.max(1);
+        self.next_periodic_at = Some(first_tick);
+        self.schedule_periodic_reevaluation_event(first_tick);
+    }
+
+    fn schedule_next_periodic_reevaluation(&mut self, scheduler: &dyn Scheduler) {
+        let Some(interval_ns) = scheduler.reevaluation_policy().periodic_interval() else {
+            self.next_periodic_at = None;
+            self.pending_periodic_reevaluation = None;
+            return;
+        };
+        let Some(current_tick) = self.next_periodic_at else {
+            return;
+        };
+        let next_tick = current_tick.saturating_add(interval_ns.max(1));
+        self.next_periodic_at = Some(next_tick);
+        self.schedule_periodic_reevaluation_event(next_tick);
+    }
+
+    fn schedule_periodic_reevaluation_event(&mut self, time: Nanos) {
+        if time > self.config.duration_ns {
+            return;
+        }
+        self.periodic_reevaluation_generation =
+            self.periodic_reevaluation_generation.saturating_add(1);
+        let generation = self.periodic_reevaluation_generation;
+        self.pending_periodic_reevaluation = Some((generation, time));
+        self.schedule_event(
+            time,
+            EventKind::SchedulerReevaluation {
+                generation,
+                trigger: ReevaluationTrigger::Periodic,
+            },
+        );
+    }
+
+    fn record_running_elapsed(&mut self, job_id: JobId, device_id: DeviceId) {
+        let speed_factor = self.device_mgr.device(device_id).speed_factor;
+        let now = self.now;
+        if let Some(job) = self.get_job_mut(job_id)
+            && job.state == JobState::Running
+            && let Some(start) = job.exec_start_time
+        {
+            let wall_elapsed = now.saturating_sub(start);
+            let work_done = wall_to_work(wall_elapsed, speed_factor).min(job.remaining_ns());
+            job.record_progress(work_done);
+            self.device_busy_time_ns[device_id.0 as usize] =
+                self.device_busy_time_ns[device_id.0 as usize].saturating_add(wall_elapsed);
         }
     }
 
@@ -942,6 +1206,7 @@ impl SimEngine {
             | EventKind::BudgetOverrun { job_id, .. } => Some(*job_id),
             EventKind::TaskArrival { .. }
             | EventKind::BusArbitration { .. }
+            | EventKind::SchedulerReevaluation { .. }
             | EventKind::SimulationEnd => None,
         }
     }
@@ -986,6 +1251,14 @@ impl SimEngine {
     /// Produce a summary of simulation results.
     pub fn summary(&self) -> SimResult {
         let m = &self.metrics;
+        let devices = self.device_mgr.devices();
+        let per_device_busy: Vec<(DeviceId, Nanos)> = self
+            .device_mgr
+            .devices()
+            .iter()
+            .map(|device| (device.id, self.device_busy_time_ns[device.id.0 as usize]))
+            .collect();
+        let transfer_stats = self.transfer_mgr.stats();
         SimResult {
             total_jobs: m.total_jobs,
             completed_jobs: m.completed_jobs,
@@ -994,7 +1267,23 @@ impl SimEngine {
             schedulable: m.is_schedulable(),
             makespan: m.makespan().unwrap_or(0),
             avg_response_time: m.avg_response_time().unwrap_or(0.0),
+            per_device_utilization: m.per_device_utilization(&per_device_busy),
+            transfer_overhead: transfer_stats.total_transfer_time_ns,
+            blocking_breakdown: BlockingBreakdown {
+                transfer_ns: transfer_stats.total_transfer_time_ns,
+                migration_ns: transfer_stats.migration_transfer_time_ns,
+                bus_wait_ns: transfer_stats.bus_wait_time_ns,
+            },
+            worst_response_time: m.worst_response_time().unwrap_or(0),
+            preemption_count: self.preemption_count,
+            migration_count: self.migration_count,
+            bus_contention_ratio: transfer_stats.bus_contention_ratio(),
             events_processed: self.events_processed,
+            energy_total_joules: energy_total_joules(
+                devices,
+                &per_device_busy,
+                transfer_stats.total_transfer_time_ns,
+            ),
         }
     }
 
@@ -1004,16 +1293,73 @@ impl SimEngine {
 }
 
 /// Aggregated result of a single simulation run.
+///
+/// This type is an internal workspace boundary (engine -> CLI/validation crates).
+/// We treat additive fields as the forward-compatible extension mechanism.
 #[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
 pub struct SimResult {
+    /// Number of jobs released into the simulation.
     pub total_jobs: u64,
+    /// Number of jobs that reached `Completed`.
     pub completed_jobs: u64,
+    /// Number of jobs transitioned to `DeadlineMissed`.
     pub deadline_misses: u64,
+    /// `deadline_misses / total_jobs` (0 when `total_jobs == 0`).
     pub miss_ratio: f64,
+    /// Convenience boolean (`deadline_misses == 0`).
     pub schedulable: bool,
+    /// Latest completion timestamp among completed jobs.
     pub makespan: Nanos,
+    /// Mean response time across completed jobs.
     pub avg_response_time: f64,
+    /// Busy-time derived utilization by device.
+    pub per_device_utilization: Vec<DeviceUtilization>,
+    /// Sum of all transfer service + wait durations.
+    pub transfer_overhead: Nanos,
+    /// Structured transfer/migration/bus wait decomposition.
+    pub blocking_breakdown: BlockingBreakdown,
+    /// Maximum response time across completed jobs.
+    pub worst_response_time: Nanos,
+    /// Count of successful preemption transitions.
+    pub preemption_count: u64,
+    /// Count of migration operations initiated by schedulers.
+    pub migration_count: u64,
+    /// Fraction of transfer time spent waiting on shared-bus arbitration.
+    pub bus_contention_ratio: f64,
+    /// Number of processed events (including callbacks and simulation end).
     pub events_processed: u64,
+    /// Conservative deterministic energy estimate:
+    /// - execution: Σ_i(power_i_watts × busy_i_seconds)
+    /// - transfer upper bound (single-count): transfer_overhead_seconds × max_i(power_i_watts)
+    ///
+    /// Missing/negative power values are treated as zero contribution.
+    pub energy_total_joules: f64,
+}
+
+fn energy_total_joules(
+    devices: &[DeviceConfig],
+    per_device_busy: &[(DeviceId, Nanos)],
+    transfer_overhead_ns: Nanos,
+) -> f64 {
+    let execution_joules: f64 = devices
+        .iter()
+        .map(|device| {
+            let power_watts = device.power_watts.unwrap_or(0.0).max(0.0);
+            let busy_ns = per_device_busy
+                .iter()
+                .find_map(|(device_id, busy_ns)| (*device_id == device.id).then_some(*busy_ns))
+                .unwrap_or(0);
+            power_watts * (busy_ns as f64 / 1_000_000_000.0)
+        })
+        .sum();
+    let max_power_watts = devices
+        .iter()
+        .filter_map(|d| d.power_watts)
+        .fold(0.0_f64, f64::max);
+    let transfer_joules =
+        max_power_watts.max(0.0) * (transfer_overhead_ns as f64 / 1_000_000_000.0);
+    execution_joules + transfer_joules
 }
 
 fn sample_exec_time_for_device(
@@ -1089,6 +1435,7 @@ fn wall_to_work(wall_ns: Nanos, speed_factor: f64) -> Nanos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hprss_types::{SchedulerView, device::PreemptionModel};
 
     fn cpu_device() -> DeviceConfig {
         DeviceConfig {
@@ -1102,6 +1449,13 @@ mod tests {
             speed_factor: 1.0,
             multicore_policy: None,
             power_watts: None,
+        }
+    }
+
+    fn powered_cpu_device(power_watts: Option<f64>) -> DeviceConfig {
+        DeviceConfig {
+            power_watts,
+            ..cpu_device()
         }
     }
 
@@ -1174,5 +1528,244 @@ mod tests {
             sample_exec_time_for_device(&task, DeviceType::Cpu, CriticalityLevel::Hi, &mut rng),
             Some(20_000)
         );
+    }
+
+    #[test]
+    fn summary_exposes_expanded_metrics() {
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 1_000_000,
+                seed: 9,
+            },
+            vec![
+                powered_cpu_device(Some(10.0)),
+                DeviceConfig {
+                    id: DeviceId(1),
+                    name: "GPU".to_string(),
+                    device_group: None,
+                    device_type: DeviceType::Gpu,
+                    cores: 1,
+                    preemption: PreemptionModel::LimitedPreemptive {
+                        granularity_ns: 10_000,
+                    },
+                    context_switch_ns: 1_000,
+                    speed_factor: 1.0,
+                    multicore_policy: None,
+                    power_watts: Some(20.0),
+                },
+            ],
+            vec![
+                InterconnectConfig {
+                    from: DeviceId(0),
+                    to: DeviceId(1),
+                    latency_ns: 100,
+                    bandwidth_bytes_per_ns: 1.0,
+                    shared_bus: Some(hprss_types::BusId(1)),
+                    arbitration: hprss_types::BusArbitration::RoundRobin,
+                },
+                InterconnectConfig {
+                    from: DeviceId(0),
+                    to: DeviceId(2),
+                    latency_ns: 100,
+                    bandwidth_bytes_per_ns: 1.0,
+                    shared_bus: Some(hprss_types::BusId(1)),
+                    arbitration: hprss_types::BusArbitration::RoundRobin,
+                },
+            ],
+            vec![SharedBusConfig {
+                id: hprss_types::BusId(1),
+                name: "sys".to_string(),
+                total_bandwidth_bytes_per_ns: 1.0,
+                arbitration: hprss_types::BusArbitration::RoundRobin,
+            }],
+        );
+
+        engine.metrics.record_job_release();
+        engine.metrics.record_job_release();
+        engine
+            .metrics
+            .record_completion(JobId(0), TaskId(0), 0, 100);
+        engine
+            .metrics
+            .record_completion(JobId(1), TaskId(1), 0, 200);
+        engine.device_busy_time_ns = vec![80, 120];
+        engine.preemption_count = 3;
+        engine.migration_count = 2;
+
+        let first = engine.transfer_mgr.initiate_transfer(
+            JobId(1),
+            DeviceId(0),
+            DeviceId(1),
+            100,
+            JobTransferKind::Dispatch,
+            0,
+            1_000,
+            1,
+        );
+        assert_eq!(first.len(), 1);
+        let queued = engine.transfer_mgr.initiate_transfer(
+            JobId(2),
+            DeviceId(0),
+            DeviceId(2),
+            100,
+            JobTransferKind::Migration,
+            0,
+            1_010,
+            1,
+        );
+        assert!(queued.is_empty());
+        let follow_up = engine
+            .transfer_mgr
+            .on_transfer_complete(JobId(1), first[0].time);
+        assert_eq!(follow_up.len(), 1);
+        let final_transfer = engine
+            .transfer_mgr
+            .on_transfer_complete(JobId(2), follow_up[0].time);
+        assert!(final_transfer.is_empty());
+
+        let summary = engine.summary();
+        assert_eq!(summary.worst_response_time, 200);
+        assert_eq!(summary.preemption_count, 3);
+        assert_eq!(summary.migration_count, 2);
+        assert_eq!(
+            summary.blocking_breakdown.transfer_ns,
+            summary.transfer_overhead
+        );
+        assert!(summary.blocking_breakdown.migration_ns > 0);
+        assert!(summary.blocking_breakdown.bus_wait_ns > 0);
+        assert!(summary.bus_contention_ratio > 0.0);
+        assert_eq!(summary.per_device_utilization.len(), 2);
+        assert!((summary.per_device_utilization[0].utilization - 0.4).abs() < f64::EPSILON);
+        assert!((summary.per_device_utilization[1].utilization - 0.6).abs() < f64::EPSILON);
+        // Device execution: 10W*80ns + 20W*120ns.
+        // Transfer upper bound (counted once): 400ns * max(10W, 20W).
+        assert!(
+            (summary.energy_total_joules - 11_200.0e-9).abs() < f64::EPSILON,
+            "energy should include per-device busy time and transfer overhead"
+        );
+    }
+
+    #[test]
+    fn summary_energy_is_zero_when_power_is_missing() {
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 1_000_000,
+                seed: 7,
+            },
+            vec![cpu_device()],
+            vec![],
+            vec![],
+        );
+        engine.metrics.record_job_release();
+        engine
+            .metrics
+            .record_completion(JobId(0), TaskId(0), 0, 100);
+        engine.device_busy_time_ns = vec![100];
+
+        let summary = engine.summary();
+        assert_eq!(summary.energy_total_joules, 0.0);
+    }
+
+    #[test]
+    fn summary_energy_does_not_multiply_transfer_by_device_count() {
+        let devices = vec![
+            DeviceConfig {
+                id: DeviceId(0),
+                power_watts: Some(5.0),
+                ..cpu_device()
+            },
+            DeviceConfig {
+                id: DeviceId(1),
+                name: "CPU-1".to_string(),
+                power_watts: Some(10.0),
+                ..cpu_device()
+            },
+            DeviceConfig {
+                id: DeviceId(2),
+                name: "CPU-2".to_string(),
+                power_watts: Some(20.0),
+                ..cpu_device()
+            },
+        ];
+
+        let energy = energy_total_joules(
+            &devices,
+            &[(DeviceId(0), 100), (DeviceId(1), 100), (DeviceId(2), 100)],
+            50,
+        );
+
+        // Execution: (5+10+20)W * 100ns = 3500e-9 J
+        // Transfer counted once: 20W * 50ns = 1000e-9 J
+        assert!((energy - 4_500.0e-9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    #[should_panic(expected = "missing task metadata for arrival callback")]
+    fn arrival_callback_requires_registered_task_metadata() {
+        struct InvariantProbeScheduler;
+
+        impl Scheduler for InvariantProbeScheduler {
+            fn name(&self) -> &str {
+                "invariant-probe"
+            }
+
+            fn on_job_arrival(
+                &mut self,
+                _job: &Job,
+                _task: &Task,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_job_complete(
+                &mut self,
+                _job: &Job,
+                _device_id: DeviceId,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_preemption_point(
+                &mut self,
+                _device_id: DeviceId,
+                _running_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+
+            fn on_criticality_change(
+                &mut self,
+                _new_level: CriticalityLevel,
+                _trigger_job: &Job,
+                _view: &SchedulerView<'_>,
+            ) -> Vec<Action> {
+                vec![Action::NoOp]
+            }
+        }
+
+        let mut engine = SimEngine::new(
+            SimConfig {
+                duration_ns: 100,
+                seed: 11,
+            },
+            vec![cpu_device()],
+            vec![],
+            vec![],
+        );
+        let missing_task_id = TaskId(7);
+        let job_id = engine.create_job(missing_task_id, 0, 50, Some(10), 1);
+        engine.schedule_event(
+            0,
+            EventKind::TaskArrival {
+                task_id: missing_task_id,
+                job_id,
+            },
+        );
+
+        let mut scheduler = InvariantProbeScheduler;
+        engine.run(&mut scheduler);
     }
 }

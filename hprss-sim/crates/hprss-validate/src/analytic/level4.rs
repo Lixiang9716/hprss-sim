@@ -49,7 +49,7 @@ pub fn observe_dsp_dma_blocking() -> HeteroPreemptionObservation {
 }
 
 pub fn observe_fpga_non_preemptive_switch() -> FpgaSwitchObservation {
-    run_fpga_switch_case(5)
+    run_fpga_switch_case(5, 5)
 }
 
 pub fn observe_dag_transfer_gating() -> TransferGatingObservation {
@@ -195,8 +195,7 @@ fn run_non_fully_preemptive_case(
     }
 }
 
-fn run_fpga_switch_case(context_switch_ns: u64) -> FpgaSwitchObservation {
-    let reconfig_time_ns = 5;
+fn run_fpga_switch_case(context_switch_ns: u64, reconfig_time_ns: u64) -> FpgaSwitchObservation {
     let mut engine = SimEngine::new(
         SimConfig {
             duration_ns: 100,
@@ -260,7 +259,7 @@ fn dsp_device(id: u32, dma_non_preemptive_ns: u64) -> DeviceConfig {
         device_type: DeviceType::Dsp,
         cores: 1,
         preemption: PreemptionModel::InterruptLevel {
-            isr_overhead_ns: 500,
+            isr_overhead_ns: 0,
             dma_non_preemptive_ns,
         },
         context_switch_ns: 0,
@@ -382,7 +381,7 @@ mod tests {
 
     #[test]
     fn fpga_non_preemptive_reconfiguration_overhead_impacts_deadline_behavior() {
-        let without_overhead = run_fpga_switch_case(0);
+        let without_overhead = run_fpga_switch_case(0, 0);
         let with_overhead = observe_fpga_non_preemptive_switch();
 
         assert_eq!(without_overhead.context_switch_ns, 0);
@@ -392,9 +391,10 @@ mod tests {
         assert_eq!(without_overhead.high_job_completion, Some(20));
 
         assert_eq!(with_overhead.context_switch_ns, 5);
+        assert_eq!(with_overhead.reconfig_time_ns, 5);
         assert_eq!(with_overhead.deadline_misses, 1);
         assert_eq!(with_overhead.completed_jobs, 1);
-        assert_eq!(with_overhead.low_job_completion, 15);
+        assert_eq!(with_overhead.low_job_completion, 20);
         assert_eq!(with_overhead.high_job_completion, None);
     }
 

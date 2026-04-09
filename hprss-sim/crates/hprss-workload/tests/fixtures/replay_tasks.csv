@@ -1,0 +1,3 @@
+task_id,name,priority,deadline_ns,criticality,affinity,exec_hints,data_size
+0,cpu-task,1,50000,Lo,"[""Cpu""]","[{""device_type"":""Cpu"",""wcet_ns"":30000}]",0
+1,gpu-task,2,40000,Lo,"[""Gpu""]","[{""device_type"":""Gpu"",""wcet_ns"":20000}]",1024
