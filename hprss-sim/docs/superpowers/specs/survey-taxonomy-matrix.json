@@ -37,7 +37,24 @@
           "notes": "Gang scheduling policy"
         }
       ],
-      "analysis_mappings": []
+      "analysis_mappings": [],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey fixed-priority family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/scheduler_catalog.rs",
+            "crates/hprss-scheduler/src/lib.rs",
+            "crates/hprss-scheduler/src/federated.rs",
+            "crates/hprss-scheduler/src/gang.rs"
+          ],
+          "covered_scheduler_keys": [
+            "fp",
+            "federated",
+            "gang"
+          ],
+          "covered_analysis_keys": []
+        }
+      ]
     },
     {
       "class_id": "deadline-driven",
@@ -63,7 +80,24 @@
           "notes": "Global EDF policy"
         }
       ],
-      "analysis_mappings": []
+      "analysis_mappings": [],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey deadline-driven family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/scheduler_catalog.rs",
+            "crates/hprss-scheduler/src/edf.rs",
+            "crates/hprss-scheduler/src/edfvd.rs",
+            "crates/hprss-scheduler/src/global_edf.rs"
+          ],
+          "covered_scheduler_keys": [
+            "edf",
+            "edfvd",
+            "global-edf"
+          ],
+          "covered_analysis_keys": []
+        }
+      ]
     },
     {
       "class_id": "laxity-driven",
@@ -77,7 +111,20 @@
           "notes": "Least-laxity-first policy"
         }
       ],
-      "analysis_mappings": []
+      "analysis_mappings": [],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey laxity-driven family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/scheduler_catalog.rs",
+            "crates/hprss-scheduler/src/llf.rs"
+          ],
+          "covered_scheduler_keys": [
+            "llf"
+          ],
+          "covered_analysis_keys": []
+        }
+      ]
     },
     {
       "class_id": "dag-aware",
@@ -97,7 +144,23 @@
           "notes": "CP-EDF DAG-aware policy"
         }
       ],
-      "analysis_mappings": []
+      "analysis_mappings": [],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey DAG-aware family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/scheduler_catalog.rs",
+            "crates/hprss-scheduler/src/heft.rs",
+            "crates/hprss-scheduler/src/cpedf.rs",
+            "crates/hprss-engine/src/dag_tracker.rs"
+          ],
+          "covered_scheduler_keys": [
+            "heft",
+            "cpedf"
+          ],
+          "covered_analysis_keys": []
+        }
+      ]
     },
     {
       "class_id": "paper-heterogeneous",
@@ -141,7 +204,30 @@
           "notes": "Preemptive-priority GPU-focused policy"
         }
       ],
-      "analysis_mappings": []
+      "analysis_mappings": [],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey paper-specialized heterogeneous family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/scheduler_catalog.rs",
+            "crates/hprss-scheduler/src/xsched.rs",
+            "crates/hprss-scheduler/src/gcaps.rs",
+            "crates/hprss-scheduler/src/gpreempt.rs",
+            "crates/hprss-scheduler/src/rtgpu.rs",
+            "crates/hprss-scheduler/src/match_sched.rs",
+            "crates/hprss-scheduler/src/gpu_preemptive_priority.rs"
+          ],
+          "covered_scheduler_keys": [
+            "xsched",
+            "gcaps",
+            "gpreempt",
+            "rtgpu",
+            "match",
+            "gpu-preemptive-priority"
+          ],
+          "covered_analysis_keys": []
+        }
+      ]
     },
     {
       "class_id": "analysis-catalog",
@@ -203,6 +289,33 @@
           "implementation_status": "implemented",
           "notes": "Extended SimSo adapter scope tag for reproducibility metadata"
         }
+      ],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey analysis and validation family baseline",
+          "implementation_evidence_paths": [
+            "crates/hprss-sim/src/main.rs",
+            "crates/hprss-validate/src/analytic/rta.rs",
+            "crates/hprss-validate/src/analytic/uniform_rta.rs",
+            "crates/hprss-validate/src/analytic/util_vectors.rs",
+            "crates/hprss-validate/src/analytic/conditional_dag.rs",
+            "crates/hprss-validate/src/analytic/shape.rs",
+            "crates/hprss-validate/src/analytic/openmp_wcrt.rs",
+            "crates/hprss-validate/src/differential/simso.rs"
+          ],
+          "covered_scheduler_keys": [],
+          "covered_analysis_keys": [
+            "none",
+            "rta-uniprocessor-fp",
+            "rta-uniform-global-fp-scaffold",
+            "util-vectors",
+            "uniform-rta-global-fp",
+            "conditional-dag",
+            "shape",
+            "openmp-wcrt",
+            "simso-scope-extension"
+          ]
+        }
       ]
     },
     {
@@ -217,6 +330,16 @@
         "Mixed-criticality mode-switch synthesis",
         "Hardware-specific GPU preemption research policies",
         "Cloud/cluster-scale multi-node scheduling"
+      ],
+      "paper_traceability": [
+        {
+          "paper_class": "Survey unsupported taxonomy classes",
+          "implementation_evidence_paths": [
+            "docs/superpowers/specs/survey-taxonomy-matrix.json"
+          ],
+          "covered_scheduler_keys": [],
+          "covered_analysis_keys": []
+        }
       ]
     }
   ]

@@ -22,7 +22,7 @@ impl Default for OpenMpWcrtModelAssumptions {
             pool_model: "single fixed-size OpenMP team pool; effective threads = min(requested_threads, available_threads)",
             region_cost_model: "C_i = serial_work + ceil(parallel_work / effective_threads) + runtime_overhead + critical_section",
             interference_model: "R_i^{k+1} = C_i + Σ ceil(R_i^k / T_h) * C_h over higher-priority regions",
-            priority_model: "lower numeric value means higher priority (ties broken by task index)",
+            priority_model: "lower numeric value means higher priority; only strictly higher priorities contribute interference",
         }
     }
 }
@@ -198,9 +198,7 @@ fn analyze_task(
         let interference = tasks
             .iter()
             .enumerate()
-            .filter(|(idx, hp)| {
-                hp.priority < task.priority || (hp.priority == task.priority && *idx < task_index)
-            })
+            .filter(|(_, hp)| hp.priority < task.priority)
             .map(|(idx, hp)| {
                 response
                     .div_ceil(hp.period_ns as u128)

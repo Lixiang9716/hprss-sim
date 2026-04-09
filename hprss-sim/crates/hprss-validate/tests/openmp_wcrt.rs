@@ -127,3 +127,101 @@ fn invalid_input_is_reported_without_fallback() {
         OpenMpWcrtError::InvalidRequestedThreads { .. }
     ));
 }
+
+#[test]
+fn paper_style_vector_matches_fixed_point_numeric_baseline() {
+    let tasks = vec![
+        OpenMpWcrtTask {
+            period_ns: 10,
+            deadline_ns: 10,
+            priority: 1,
+            requested_threads: 4,
+            serial_work_ns: 1,
+            parallel_work_ns: 4,
+            runtime_overhead_ns: 0,
+            critical_section_ns: 0,
+        },
+        OpenMpWcrtTask {
+            period_ns: 20,
+            deadline_ns: 20,
+            priority: 2,
+            requested_threads: 2,
+            serial_work_ns: 2,
+            parallel_work_ns: 6,
+            runtime_overhead_ns: 0,
+            critical_section_ns: 0,
+        },
+        OpenMpWcrtTask {
+            period_ns: 40,
+            deadline_ns: 40,
+            priority: 3,
+            requested_threads: 1,
+            serial_work_ns: 7,
+            parallel_work_ns: 0,
+            runtime_overhead_ns: 0,
+            critical_section_ns: 0,
+        },
+    ];
+    let report = analyze_openmp_wcrt(
+        &tasks,
+        OpenMpWcrtConfig {
+            max_iterations: 16,
+            available_threads: 4,
+        },
+    )
+    .expect("paper-style vector should analyze");
+
+    assert_eq!(report.task_results[0].isolated_cost_ns, 2);
+    assert_eq!(report.task_results[0].response_time_ns, 2);
+    assert_eq!(report.task_results[0].iterations, 1);
+    assert_eq!(report.task_results[1].isolated_cost_ns, 5);
+    assert_eq!(report.task_results[1].response_time_ns, 7);
+    assert_eq!(report.task_results[1].iterations, 2);
+    assert_eq!(report.task_results[2].isolated_cost_ns, 7);
+    assert_eq!(report.task_results[2].response_time_ns, 16);
+    assert_eq!(report.task_results[2].iterations, 3);
+    assert!(report.is_schedulable());
+}
+
+#[test]
+fn equal_priority_tasks_do_not_interfere_in_hp_sum() {
+    let tasks = vec![
+        OpenMpWcrtTask {
+            period_ns: 10,
+            deadline_ns: 10,
+            priority: 1,
+            requested_threads: 1,
+            serial_work_ns: 3,
+            parallel_work_ns: 0,
+            runtime_overhead_ns: 0,
+            critical_section_ns: 0,
+        },
+        OpenMpWcrtTask {
+            period_ns: 20,
+            deadline_ns: 20,
+            priority: 1,
+            requested_threads: 1,
+            serial_work_ns: 4,
+            parallel_work_ns: 0,
+            runtime_overhead_ns: 0,
+            critical_section_ns: 0,
+        },
+    ];
+
+    let report = analyze_openmp_wcrt(
+        &tasks,
+        OpenMpWcrtConfig {
+            max_iterations: 8,
+            available_threads: 2,
+        },
+    )
+    .expect("same-priority vector should analyze");
+
+    assert_eq!(report.task_results[1].response_time_ns, 4);
+    assert_eq!(report.task_results[1].iterations, 1);
+    assert!(matches!(
+        report.task_results[1].status,
+        OpenMpWcrtStatus::Schedulable
+    ));
+    assert!(!report.assumptions.priority_model.contains("ties broken"));
+}

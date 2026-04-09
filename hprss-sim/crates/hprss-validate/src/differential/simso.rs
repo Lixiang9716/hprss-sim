@@ -35,7 +35,26 @@ pub struct Level3SimsoDifferentialReport {
     pub scheduler: CpuOnlySchedulerConfig,
     pub hprss: CpuOnlyRunSummary,
     pub simso: SimsoRunSummary,
+    pub mismatches: Vec<SimsoSummaryMismatch>,
     pub outputs_match: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimsoMismatchCategory {
+    Scheduler,
+    DeadlineMisses,
+    CompletionCount,
+    MissRatio,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SimsoSummaryMismatch {
+    pub category: SimsoMismatchCategory,
+    pub field: &'static str,
+    pub expected: String,
+    pub observed: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -232,7 +251,13 @@ pub fn run_level3_simso_differential(
         .map_err(SimsoAdapterError::SerializeInput)?;
     let adapter_output = execute_adapter(config, &adapter_input)?;
     let simso = normalize_simso_output(&adapter_output)?;
-    let outputs_match = summaries_match(&hprss, &simso, config.miss_ratio_tolerance);
+    let mismatches = collect_summary_mismatches(
+        &hprss,
+        &simso,
+        scheduler_label(scheduler),
+        config.miss_ratio_tolerance,
+    );
+    let outputs_match = mismatches.is_empty();
 
     Ok(Level3SimsoDifferentialReport {
         scope: LEVEL3_SCOPE,
@@ -240,6 +265,7 @@ pub fn run_level3_simso_differential(
         scheduler,
         hprss,
         simso,
+        mismatches,
         outputs_match,
     })
 }
@@ -435,14 +461,82 @@ fn to_adapter_task(task_id: u32, task: &CpuOnlyTask) -> SimsoAdapterTask {
     }
 }
 
-fn summaries_match(
+fn collect_summary_mismatches(
     hprss: &CpuOnlyRunSummary,
     simso: &SimsoRunSummary,
+    requested_scheduler: &'static str,
     miss_ratio_tolerance: f64,
-) -> bool {
-    hprss.deadline_misses == simso.deadline_misses
-        && hprss.completion_count == simso.completion_count
-        && (hprss.miss_ratio - simso.miss_ratio).abs() <= miss_ratio_tolerance
+) -> Vec<SimsoSummaryMismatch> {
+    let mut mismatches = Vec::new();
+    match simso.scheduler.as_deref() {
+        Some(observed_scheduler) if observed_scheduler != requested_scheduler => {
+            mismatches.push(SimsoSummaryMismatch {
+                category: SimsoMismatchCategory::Scheduler,
+                field: "scheduler",
+                expected: requested_scheduler.to_string(),
+                observed: observed_scheduler.to_string(),
+                detail: "adapter scheduler does not match requested scheduler".to_string(),
+            });
+        }
+        Some(_) => {}
+        None => {
+            mismatches.push(SimsoSummaryMismatch {
+                category: SimsoMismatchCategory::Scheduler,
+                field: "scheduler",
+                expected: requested_scheduler.to_string(),
+                observed: "<missing>".to_string(),
+                detail: "adapter output missing required scheduler field".to_string(),
+            });
+        }
+    }
+    if hprss.deadline_misses != simso.deadline_misses {
+        mismatches.push(SimsoSummaryMismatch {
+            category: SimsoMismatchCategory::DeadlineMisses,
+            field: "deadline_misses",
+            expected: hprss.deadline_misses.to_string(),
+            observed: simso.deadline_misses.to_string(),
+            detail: "deadline misses differ between hprss and SimSo".to_string(),
+        });
+    }
+    if hprss.completion_count != simso.completion_count {
+        mismatches.push(SimsoSummaryMismatch {
+            category: SimsoMismatchCategory::CompletionCount,
+            field: "completion_count",
+            expected: hprss.completion_count.to_string(),
+            observed: simso.completion_count.to_string(),
+            detail: "completion count differs between hprss and SimSo".to_string(),
+        });
+    }
+    let mut miss_ratio_notes = Vec::new();
+    let miss_ratio_delta = (hprss.miss_ratio - simso.miss_ratio).abs();
+    if miss_ratio_delta > miss_ratio_tolerance {
+        miss_ratio_notes.push(format!(
+            "absolute delta to hprss ({miss_ratio_delta}) exceeds tolerance {miss_ratio_tolerance}"
+        ));
+    }
+    let simso_total_jobs = simso.deadline_misses.saturating_add(simso.completion_count);
+    let derived_simso_miss_ratio = if simso_total_jobs == 0 {
+        0.0
+    } else {
+        simso.deadline_misses as f64 / simso_total_jobs as f64
+    };
+    let simso_self_delta = (simso.miss_ratio - derived_simso_miss_ratio).abs();
+    if simso_self_delta > miss_ratio_tolerance {
+        miss_ratio_notes.push(format!(
+            "adapter miss_ratio inconsistent with deadline_misses/(deadline_misses+completion_count) (expected {derived_simso_miss_ratio}, observed {})",
+            simso.miss_ratio
+        ));
+    }
+    if !miss_ratio_notes.is_empty() {
+        mismatches.push(SimsoSummaryMismatch {
+            category: SimsoMismatchCategory::MissRatio,
+            field: "miss_ratio",
+            expected: hprss.miss_ratio.to_string(),
+            observed: simso.miss_ratio.to_string(),
+            detail: miss_ratio_notes.join("; "),
+        });
+    }
+    mismatches
 }
 
 fn scheduler_label(scheduler: CpuOnlySchedulerConfig) -> &'static str {
@@ -543,6 +637,101 @@ mod tests {
         assert_eq!(normalized.deadline_misses, 0);
         assert_eq!(normalized.completion_count, 4);
         assert_eq!(normalized.scheduler.as_deref(), Some("edf"));
+    }
+
+    #[test]
+    fn summary_mismatch_diagnostics_include_categories() {
+        let mismatches = collect_summary_mismatches(
+            &CpuOnlyRunSummary {
+                scheduler: CpuOnlySchedulerConfig::FixedPriority,
+                deadline_misses: 0,
+                completion_count: 10,
+                miss_ratio: 0.0,
+            },
+            &SimsoRunSummary {
+                scheduler: Some("edf".to_string()),
+                deadline_misses: 2,
+                completion_count: 7,
+                miss_ratio: 0.2857142857142857,
+            },
+            "fp",
+            1e-12,
+        );
+        assert_eq!(mismatches.len(), 4);
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.category == SimsoMismatchCategory::Scheduler)
+        );
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.category == SimsoMismatchCategory::DeadlineMisses)
+        );
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.category == SimsoMismatchCategory::CompletionCount)
+        );
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.category == SimsoMismatchCategory::MissRatio)
+        );
+    }
+
+    #[test]
+    fn summary_mismatch_diagnostics_flag_inconsistent_simso_ratio() {
+        let mismatches = collect_summary_mismatches(
+            &CpuOnlyRunSummary {
+                scheduler: CpuOnlySchedulerConfig::FixedPriority,
+                deadline_misses: 7,
+                completion_count: 777,
+                miss_ratio: 7.0 / 777.0,
+            },
+            &SimsoRunSummary {
+                scheduler: Some("fp".to_string()),
+                deadline_misses: 7,
+                completion_count: 777,
+                miss_ratio: 0.123456,
+            },
+            "fp",
+            1e-12,
+        );
+        let ratio = mismatches
+            .into_iter()
+            .find(|m| m.category == SimsoMismatchCategory::MissRatio)
+            .expect("miss_ratio mismatch should be reported");
+        assert!(
+            ratio
+                .detail
+                .contains("deadline_misses/(deadline_misses+completion_count)")
+        );
+    }
+
+    #[test]
+    fn summary_mismatch_diagnostics_require_scheduler_field() {
+        let mismatches = collect_summary_mismatches(
+            &CpuOnlyRunSummary {
+                scheduler: CpuOnlySchedulerConfig::FixedPriority,
+                deadline_misses: 0,
+                completion_count: 10,
+                miss_ratio: 0.0,
+            },
+            &SimsoRunSummary {
+                scheduler: None,
+                deadline_misses: 0,
+                completion_count: 10,
+                miss_ratio: 0.0,
+            },
+            "fp",
+            1e-12,
+        );
+        let scheduler = mismatches
+            .iter()
+            .find(|m| m.category == SimsoMismatchCategory::Scheduler)
+            .expect("missing scheduler must be reported");
+        assert_eq!(scheduler.observed, "<missing>");
     }
 
     #[test]

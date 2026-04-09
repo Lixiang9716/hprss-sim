@@ -63,7 +63,7 @@ impl Scheduler for GpuPreemptivePriorityScheduler {
     fn on_preemption_point(
         &mut self,
         device_id: DeviceId,
-        running_job: &Job,
+        _running_job: &Job,
         view: &SchedulerView<'_>,
     ) -> Vec<Action> {
         let Some(device) = Self::device(device_id, view) else {
@@ -82,7 +82,7 @@ impl Scheduler for GpuPreemptivePriorityScheduler {
 
         if Self::queued_rank(waiting) < Self::running_rank(running) {
             vec![Action::Preempt {
-                victim: running_job.id,
+                victim: running.job_id,
                 by: waiting.job_id,
                 device_id,
             }]

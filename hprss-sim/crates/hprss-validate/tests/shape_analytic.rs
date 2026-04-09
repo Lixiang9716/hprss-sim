@@ -4,31 +4,57 @@ use hprss_validate::{
 };
 
 #[test]
-fn baseline_fixture_is_deterministic_and_trend_consistent() {
+fn paper_baseline_fixture_matches_deterministic_seed_counts() {
     let fixture = baseline_shape_fixture();
-    let first = analyze_shape_curve(&fixture, ShapeAnalysisConfig::default())
-        .expect("baseline fixture should analyze");
-    let second = analyze_shape_curve(&fixture, ShapeAnalysisConfig::default())
-        .expect("baseline fixture should analyze reproducibly");
-
-    assert_eq!(first, second);
-    assert_eq!(first.points.len(), SHAPE_BASELINE_UTILIZATION_POINTS.len());
-    for (point, expected_util) in first
-        .points
+    let observed: Vec<(f64, u32, u32)> = fixture
         .iter()
-        .zip(SHAPE_BASELINE_UTILIZATION_POINTS.iter().copied())
+        .map(|sample| {
+            (
+                sample.utilization,
+                sample.schedulable_runs,
+                sample.total_runs,
+            )
+        })
+        .collect();
+
+    let expected = vec![
+        (0.4, 5, 8),
+        (0.7, 2, 8),
+        (1.0, 0, 8),
+        (1.3, 0, 8),
+        (1.6, 0, 8),
+    ];
+    assert_eq!(observed, expected);
+}
+
+#[test]
+fn paper_baseline_analysis_has_explicit_numeric_alignment() {
+    let fixture = baseline_shape_fixture();
+    let report = analyze_shape_curve(&fixture, ShapeAnalysisConfig::default())
+        .expect("paper baseline fixture should analyze");
+
+    let expected = vec![
+        (0.4, 0.625, 0.244_863_216_367, 0.914_766_585_863),
+        (0.7, 0.25, 0.031_854_026_25, 0.650_855_794_413),
+        (1.0, 0.0, 0.0, 0.369_416_647_553),
+        (1.3, 0.0, 0.0, 0.369_416_647_553),
+        (1.6, 0.0, 0.0, 0.369_416_647_553),
+    ];
+
+    assert!(report.is_trend_consistent());
+    assert_eq!(report.points.len(), SHAPE_BASELINE_UTILIZATION_POINTS.len());
+    for (point, (expected_u, expected_ratio, expected_lo, expected_hi)) in
+        report.points.iter().zip(expected.into_iter())
     {
-        assert!((point.utilization - expected_util).abs() <= 1e-12);
-        assert!((0.0..=1.0).contains(&point.schedulability_ratio));
-        assert!((0.0..=1.0).contains(&point.lower_confidence_bound));
-        assert!((0.0..=1.0).contains(&point.upper_confidence_bound));
-        assert!(point.lower_confidence_bound <= point.schedulability_ratio);
-        assert!(point.schedulability_ratio <= point.upper_confidence_bound);
+        assert!((point.utilization - expected_u).abs() <= 1e-12);
+        assert!((point.schedulability_ratio - expected_ratio).abs() <= 1e-12);
+        assert!((point.lower_confidence_bound - expected_lo).abs() <= 1e-12);
+        assert!((point.upper_confidence_bound - expected_hi).abs() <= 1e-12);
     }
 }
 
 #[test]
-fn rejects_increasing_trend_without_silent_fallback() {
+fn paper_alignment_rejects_increasing_trend_without_silent_fallback() {
     let samples = vec![
         ShapeCurveSample {
             utilization: 0.4,
@@ -49,7 +75,7 @@ fn rejects_increasing_trend_without_silent_fallback() {
 }
 
 #[test]
-fn rejects_invalid_counts_without_silent_fallback() {
+fn paper_alignment_rejects_invalid_counts_without_silent_fallback() {
     let err = analyze_shape_curve(
         &[ShapeCurveSample {
             utilization: 1.0,

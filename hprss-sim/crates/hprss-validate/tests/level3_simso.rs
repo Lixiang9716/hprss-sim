@@ -43,6 +43,19 @@ fn adapter_invocation_contract_and_mapping_are_wired() {
     assert_eq!(report.simso.completion_count, 777);
     assert_eq!(report.simso.scheduler.as_deref(), Some("fp"));
     assert!(!report.outputs_match);
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.field == "deadline_misses")
+    );
+    assert!(
+        report
+            .mismatches
+            .iter()
+            .any(|m| m.field == "completion_count")
+    );
+    assert!(report.mismatches.iter().any(|m| m.field == "miss_ratio"));
 }
 
 #[test]
@@ -61,6 +74,31 @@ fn adapter_invocation_supports_extended_schema_contract() {
 
     assert!(report.outputs_match);
     assert_eq!(report.simso.deadline_misses, 0);
+    assert_eq!(report.simso.completion_count, 10);
+    assert_eq!(report.simso.miss_ratio, 0.0);
+    assert_eq!(report.simso.scheduler.as_deref(), Some("fp"));
+    assert!(report.mismatches.is_empty());
+}
+
+#[test]
+fn adapter_invocation_enforces_numeric_and_field_alignment() {
+    let workload = selected_cpu_only_workloads()
+        .into_iter()
+        .find(|w| w.name == "single-task-control")
+        .expect("single-task-control fixture must exist");
+    let config =
+        SimsoAdapterConfig::for_runner(fixture_runner("simso_adapter_contract_alignment.py"))
+            .with_tolerance(1e-12);
+
+    let report = run_level3_simso_differential(&workload, CpuOnlySchedulerConfig::Edf, &config)
+        .expect("alignment fixture adapter should execute");
+
+    assert!(report.outputs_match);
+    assert!(report.mismatches.is_empty());
+    assert_eq!(report.simso.scheduler.as_deref(), Some("edf"));
+    assert_eq!(report.simso.deadline_misses, 0);
+    assert_eq!(report.simso.completion_count, 10);
+    assert_eq!(report.simso.miss_ratio, 0.0);
 }
 
 #[test]

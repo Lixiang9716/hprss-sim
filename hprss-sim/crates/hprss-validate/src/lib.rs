@@ -75,7 +75,8 @@ pub use differential::paper_exp::{
 };
 pub use differential::simso::{
     LEVEL3_SCOPE, Level3SimsoDifferentialReport, SimsoAdapterConfig, SimsoAdapterError,
-    SimsoDiagnosticCategory, SimsoRunSummary, SimsoScenarioDomain, SimsoScenarioModel,
-    SimsoTaskModel, default_simso_adapter_runner, normalize_simso_output,
-    run_level3_simso_differential, run_level3_simso_selected, validate_simso_scenario,
+    SimsoDiagnosticCategory, SimsoMismatchCategory, SimsoRunSummary, SimsoScenarioDomain,
+    SimsoScenarioModel, SimsoSummaryMismatch, SimsoTaskModel, default_simso_adapter_runner,
+    normalize_simso_output, run_level3_simso_differential, run_level3_simso_selected,
+    validate_simso_scenario,
 };

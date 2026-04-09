@@ -25,7 +25,7 @@ impl Default for ShapeModelAssumptions {
             workload_fixture: "fixed utilization-grid fixture consistent with paper baseline points",
             ratio_interpretation: "schedulability ratio = schedulable_runs / total_runs",
             trend_expectation: "ratio is expected to be non-increasing as utilization increases",
-            confidence_model: "Hoeffding-style finite-sample two-sided envelope",
+            confidence_model: "Clopper-Pearson exact binomial two-sided confidence interval",
         }
     }
 }
@@ -175,9 +175,11 @@ pub fn analyze_shape_curve(
             });
         }
 
-        let radius = hoeffding_radius(sample.total_runs, config.confidence);
-        let lower_confidence_bound = (ratio - radius).max(0.0);
-        let upper_confidence_bound = (ratio + radius).min(1.0);
+        let (lower_confidence_bound, upper_confidence_bound) = clopper_pearson_bounds(
+            sample.schedulable_runs,
+            sample.total_runs,
+            config.confidence,
+        );
 
         points.push(ShapeCurvePoint {
             utilization: sample.utilization,
@@ -199,37 +201,111 @@ pub fn analyze_shape_curve(
     })
 }
 
-fn hoeffding_radius(total_runs: u32, confidence: f64) -> f64 {
-    let n = total_runs as f64;
-    let delta = 1.0 - confidence;
-    ((2.0 / delta).ln() / (2.0 * n)).sqrt()
+fn clopper_pearson_bounds(schedulable_runs: u32, total_runs: u32, confidence: f64) -> (f64, f64) {
+    let alpha = 1.0 - confidence;
+    let tail_probability = alpha / 2.0;
+
+    let lower = if schedulable_runs == 0 {
+        0.0
+    } else {
+        invert_binomial_tail_lower(schedulable_runs, total_runs, tail_probability)
+    };
+
+    let upper = if schedulable_runs == total_runs {
+        1.0
+    } else {
+        invert_binomial_cdf_upper(schedulable_runs, total_runs, tail_probability)
+    };
+
+    (lower, upper)
+}
+
+fn invert_binomial_tail_lower(successes: u32, trials: u32, target: f64) -> f64 {
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..100 {
+        let mid = (low + high) / 2.0;
+        if binomial_tail_ge(successes, trials, mid) < target {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (low + high) / 2.0
+}
+
+fn invert_binomial_cdf_upper(successes: u32, trials: u32, target: f64) -> f64 {
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..100 {
+        let mid = (low + high) / 2.0;
+        if binomial_cdf(successes, trials, mid) > target {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (low + high) / 2.0
+}
+
+fn binomial_tail_ge(successes: u32, trials: u32, p: f64) -> f64 {
+    if successes == 0 {
+        1.0
+    } else {
+        (1.0 - binomial_cdf(successes - 1, trials, p)).clamp(0.0, 1.0)
+    }
+}
+
+fn binomial_cdf(successes: u32, trials: u32, p: f64) -> f64 {
+    if successes >= trials {
+        return 1.0;
+    }
+    if p <= 0.0 {
+        return 1.0;
+    }
+    if p >= 1.0 {
+        return 0.0;
+    }
+
+    let q = 1.0 - p;
+    let mut pmf = q.powf(trials as f64);
+    let mut cumulative = pmf;
+
+    for i in 0..successes {
+        let numerator = (trials - i) as f64;
+        let denominator = (i + 1) as f64;
+        pmf *= numerator / denominator * p / q;
+        cumulative += pmf;
+    }
+
+    cumulative.clamp(0.0, 1.0)
 }
 
 pub fn baseline_shape_fixture() -> Vec<ShapeCurveSample> {
     [
         ShapeCurveSample {
             utilization: 0.4,
-            schedulable_runs: 8,
+            schedulable_runs: 5,
             total_runs: 8,
         },
         ShapeCurveSample {
             utilization: 0.7,
-            schedulable_runs: 8,
+            schedulable_runs: 2,
             total_runs: 8,
         },
         ShapeCurveSample {
             utilization: 1.0,
-            schedulable_runs: 6,
+            schedulable_runs: 0,
             total_runs: 8,
         },
         ShapeCurveSample {
             utilization: 1.3,
-            schedulable_runs: 3,
+            schedulable_runs: 0,
             total_runs: 8,
         },
         ShapeCurveSample {
             utilization: 1.6,
-            schedulable_runs: 1,
+            schedulable_runs: 0,
             total_runs: 8,
         },
     ]

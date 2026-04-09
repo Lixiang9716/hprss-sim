@@ -11,8 +11,8 @@
       "paper_file": "SHAPE_ICCAD2022_Xu.pdf",
       "algorithm": "SHAPE",
       "family": "analytic test",
-      "coverage_status": "approximation_bound",
-      "note": "SHAPE path exists, but fidelity remains approximation-bound until paper-native calibration bounds are formalized."
+      "coverage_status": "implemented_baseline",
+      "note": "SHAPE analytic path now includes deterministic paper-style numeric alignment tests and exact confidence-bound assertions."
     },
     {
       "paper_file": "XSched_OSDI25_Shen.pdf",
@@ -46,8 +46,8 @@
       "paper_file": "Preemptive_Priority_GPU_RT_2024_Wang.pdf",
       "algorithm": "Preemptive-Priority GPU",
       "family": "online scheduler",
-      "coverage_status": "approximation_bound",
-      "note": "Implementation path exists, but paper-level fidelity claims remain bounded by approximation assumptions."
+      "coverage_status": "implemented_baseline",
+      "note": "Scheduler preemption-point victim selection and priority semantics are covered by deterministic paper-intent tests."
     },
     {
       "paper_file": "Util_Vectors_RTSS2020_Griffin.pdf",
@@ -88,8 +88,8 @@
       "paper_file": "SimSo_WATERS2014_Cheramy.pdf",
       "algorithm": "SimSo differential adapter",
       "family": "external adapter",
-      "coverage_status": "approximation_bound",
-      "note": "Adapter is available; fidelity remains bounded by adapter-contract scope assumptions."
+      "coverage_status": "implemented_baseline",
+      "note": "Adapter contract now includes structured mismatch diagnostics and paper-field alignment fixture coverage."
     },
     {
       "paper_file": "MATCH_RTSS2025_Ni.pdf",
@@ -102,21 +102,21 @@
       "paper_file": "WCRT_OpenMP_RTSS2021_Sun.pdf",
       "algorithm": "OpenMP WCRT analysis",
       "family": "analytic test",
-      "coverage_status": "approximation_bound",
-      "note": "OpenMP adapter scenarios are passing, but still rely on explicit approximation assumptions."
+      "coverage_status": "implemented_baseline",
+      "note": "OpenMP WCRT estimator now uses paper-style fixed-point HP semantics with deterministic numeric alignment vectors."
     },
     {
       "paper_file": "Survey_RT_Heterogeneous_2025_Zou.pdf",
       "algorithm": "Survey taxonomy mapping",
       "family": "external adapter",
-      "coverage_status": "approximation_bound",
-      "note": "Coverage map exists; this remains a taxonomy approximation layer, not a single executable algorithm."
+      "coverage_status": "implemented_baseline",
+      "note": "Taxonomy matrix now includes paper-traceable evidence paths plus machine-checkable consistency validation."
     }
   ],
   "coverage_summary": {
     "papers_total": 15,
-    "implemented_baseline": 10,
-    "approximation_bound": 5,
+    "implemented_baseline": 15,
+    "approximation_bound": 0,
     "unsupported": 0
   },
   "artifact_summary": {
