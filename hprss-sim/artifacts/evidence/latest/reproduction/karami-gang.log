@@ -1,8 +1,8 @@
 OpenMP approximation assumptions (2):
   - karami-paper-profile: Workload adapted from paper profile 'karami-rt-genai-profile-a' for deterministic simulator replay.
   - karami-burst-window: Prompt bursts are represented by precomputed release offsets. [rationale: Paper reports burst groups instead of a closed-form arrival model.]
-[2m2026-04-09T07:01:01.976782Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=43
-[2m2026-04-09T07:01:01.976799Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=16
+[2m2026-04-09T06:52:36.539060Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=43
+[2m2026-04-09T06:52:36.539077Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=16
 HPRSS Simulation Summary
 algorithm      : Gang
 algorithm_key  : gang
@@ -27,7 +27,7 @@ migration_count  : 0
 bus_contention_ratio: 0.000000
 energy_total_joules: 0.003675000
 events_processed: 16
-wall_time_us    : 30
+wall_time_us    : 22
 
 [stderr]
     Finished `release` profile [optimized + debuginfo] target(s) in 0.03s

@@ -1,0 +1,57 @@
+name: hprss-sim CI Gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hprss-sim/**"
+      - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "hprss-sim/**"
+      - ".github/workflows/**"
+
+jobs:
+  ci-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-audit
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install plot dependencies
+        working-directory: hprss-sim
+        run: |
+          if [ -f scripts/requirements-plot.txt ]; then
+            python -m pip install --upgrade pip
+            pip install -r scripts/requirements-plot.txt
+          fi
+
+      - name: Run CI gate
+        working-directory: hprss-sim
+        run: make ci-gate
+
+      - name: Upload CI evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hprss-sim-ci-evidence-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            hprss-sim/artifacts/reproduction/alg-paper-reproduction-suite/**
+            hprss-sim/plots/**

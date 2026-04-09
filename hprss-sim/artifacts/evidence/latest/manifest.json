@@ -1,0 +1,69 @@
+{
+  "bundle_root": "artifacts/evidence/latest",
+  "files": [
+    {
+      "bundle_path": "artifacts/evidence/latest/plots/makespan_avg_response_vs_algorithm.png",
+      "sha256": "8fb2b755b163f13c7ee419e2e9caaa4ce7ec2d079c0d3dca74a075d53b406ffe",
+      "source_path": "plots/makespan_avg_response_vs_algorithm.png"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/plots/schedulability_miss_vs_utilization.png",
+      "sha256": "628dd0f2bd9a8801d3140433df0875f856a14b4cc29b08c5c9645b78aae9c3b2",
+      "source_path": "plots/schedulability_miss_vs_utilization.png"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/plots/wall_time_vs_algorithm.png",
+      "sha256": "d81f0e5e23a57bd58369efa18013225d588bb6d34655ad8f0d1813b587250e7a",
+      "source_path": "plots/wall_time_vs_algorithm.png"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/karami-gang.log",
+      "sha256": "aa45b3fb6c207901859009eeca7cafce5e8c932ad47fa848b85386bd7ca307b1",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/karami-gang.log"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/karami-global-edf.log",
+      "sha256": "704888c27ab07d33befad639e3e1ea384ef0f17622abbe001833b8fc877e6e08",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/karami-global-edf.log"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/manifest.json",
+      "sha256": "ac8ea6b3b70de476b2f9f92d21f818aedb3fae65307af2530fc8bb89d8b47ebc",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/manifest.json"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/openmp-gang.log",
+      "sha256": "d2a73f101dfb3ebc3772b344bbd6d7c664dd5cbcf43f7a899aec12d7e4d7396b",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/openmp-gang.log"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/openmp-global-edf.log",
+      "sha256": "0014b4698175a034fa6da563d212a37e164a132fcf890251fb6f044e7c5cdb6b",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/openmp-global-edf.log"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/suite_records.jsonl",
+      "sha256": "e4c68f249e1f582e8705360a5f6b98708983af4f0bf923417260d4a8a606b9a2",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/suite_records.jsonl"
+    },
+    {
+      "bundle_path": "artifacts/evidence/latest/reproduction/sweep.csv",
+      "sha256": "1a6243e9f395c5a44bf045f4e5aeea9118f36b18e04cc46979f7dbb26524cd7d",
+      "source_path": "artifacts/reproduction/alg-paper-reproduction-suite/sweep.csv"
+    }
+  ],
+  "generated_at_utc": "2026-04-09T07:00:56Z",
+  "git_commit": "fb102498d378a09ceb849efddfb4813de4a2e57f",
+  "source_paths": [
+    "plots/makespan_avg_response_vs_algorithm.png",
+    "plots/schedulability_miss_vs_utilization.png",
+    "plots/wall_time_vs_algorithm.png",
+    "artifacts/reproduction/alg-paper-reproduction-suite/karami-gang.log",
+    "artifacts/reproduction/alg-paper-reproduction-suite/karami-global-edf.log",
+    "artifacts/reproduction/alg-paper-reproduction-suite/manifest.json",
+    "artifacts/reproduction/alg-paper-reproduction-suite/openmp-gang.log",
+    "artifacts/reproduction/alg-paper-reproduction-suite/openmp-global-edf.log",
+    "artifacts/reproduction/alg-paper-reproduction-suite/suite_records.jsonl",
+    "artifacts/reproduction/alg-paper-reproduction-suite/sweep.csv"
+  ]
+}

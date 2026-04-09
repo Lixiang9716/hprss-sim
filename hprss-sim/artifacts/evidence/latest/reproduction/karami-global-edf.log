@@ -1,12 +1,12 @@
 OpenMP approximation assumptions (2):
   - karami-paper-profile: Workload adapted from paper profile 'karami-rt-genai-profile-a' for deterministic simulator replay.
   - karami-burst-window: Prompt bursts are represented by precomputed release offsets. [rationale: Paper reports burst groups instead of a closed-form arrival model.]
-[2m2026-04-09T07:01:01.976782Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=43
-[2m2026-04-09T07:01:01.976799Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=16
+[2m2026-04-09T06:52:36.494479Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation starting: duration=10000000000ns, seed=41
+[2m2026-04-09T06:52:36.494492Z[0m [32m INFO[0m [2mhprss_engine::engine[0m[2m:[0m Simulation ended at t=10000000000ns, events_processed=16
 HPRSS Simulation Summary
-algorithm      : Gang
-algorithm_key  : gang
-algorithm_family: fixed-priority
+algorithm      : Global-EDF
+algorithm_key  : global-edf
+algorithm_family: deadline-driven
 analysis_mode  : none
 analysis_scope : none
 analysis_assumption_count: 0
@@ -27,8 +27,8 @@ migration_count  : 0
 bus_contention_ratio: 0.000000
 energy_total_joules: 0.003675000
 events_processed: 16
-wall_time_us    : 30
+wall_time_us    : 24
 
 [stderr]
     Finished `release` profile [optimized + debuginfo] target(s) in 0.03s
-     Running `target/release/hprss-sim --platform configs/platform_ft2000_full.toml --seed 43 --scheduler gang --analysis-mode none --karami-profile-json crates/hprss-workload/tests/fixtures/karami_profile_sample.json run`
+     Running `target/release/hprss-sim --platform configs/platform_ft2000_full.toml --seed 41 --scheduler global-edf --analysis-mode none --karami-profile-json crates/hprss-workload/tests/fixtures/karami_profile_sample.json run`
